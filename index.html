@@ -226,6 +226,16 @@ function SvgChart({ series, up }) {
   );
 }
 
+function MiniSpark({ series, up }) {
+  if (!series || series.length < 2) return null;
+  const w = 48, h = 20;
+  const vals = series.map((d) => d.p);
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const range = max - min || 1;
+  const pts = series.map((d, i) => `${(i / (series.length - 1)) * w},${h - ((d.p - min) / range) * h}`).join(" ");
+  return <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none"><polyline points={pts} fill="none" stroke={up ? C.green : C.red} strokeWidth="1.3" /></svg>;
+}
+
 /* ================= Atoms ================= */
 const Panel = ({ title, right, children, style }) => (
   <div style={{ background: C.panel, border: `1px solid ${C.line}`, ...style }}>
@@ -281,6 +291,7 @@ function App() {
   const [watch, setWatch] = useState([{ s: "NVDA" }, { s: "AAPL" }, { s: "RHM", y: "RHM.DE" }, { s: "TOYOTA", y: "7203.T" }]);
   const [wlQ, setWlQ] = useState({});
   const [idxQ, setIdxQ] = useState({});
+  const [sparks, setSparks] = useState({});
   const [active, setActive] = useState({ s: "NVDA" });
   const [detail, setDetail] = useState(null); const [dLoad, setDLoad] = useState(false);
   const [chart, setChart] = useState({ ok: false, series: [] });
@@ -290,7 +301,7 @@ function App() {
   useEffect(() => {
     const fk = LS.get("fh_key") || "", tk = LS.get("td_key") || "", gk = LS.get("groq_key") || "", wl = LS.get("watch2");
     if (wl?.length) { setWatch(wl); setActive(wl[0]); }
-    if (fk) { setFhKey(fk); setTdKey(tk); setGroqKey(gk); setConnected(true); const use = wl?.length ? wl : watch; loadWatch(fk, use); loadDetail(use[0], fk, tk); loadIndices(); }
+    if (fk) { setFhKey(fk); setTdKey(tk); setGroqKey(gk); setConnected(true); const use = wl?.length ? wl : watch; loadWatch(fk, use); loadSparks(use); loadDetail(use[0], fk, tk); loadIndices(); }
     setBooted(true);
     const iv = setInterval(() => setClock(new Date().toLocaleTimeString("de-DE")), 1000);
     return () => clearInterval(iv);
@@ -303,6 +314,13 @@ function App() {
     const out = {};
     for (const e of wl) { try { out[keyOf(e)] = await getQuoteLite(e, fk); } catch {} }
     setWlQ((p) => ({ ...p, ...out }));
+  };
+  const loadSparks = async (wl) => {
+    const out = {};
+    await Promise.all(wl.map(async (e) => {
+      try { const r = await jget(`${YF}?symbol=${encodeURIComponent(e.y || e.s)}&range=1mo&chartOnly=1`); if (r?.series?.length > 2) out[keyOf(e)] = r.series; } catch {}
+    }));
+    setSparks((p) => ({ ...p, ...out }));
   };
   const loadIndices = async () => {
     const out = {};
@@ -329,13 +347,13 @@ function App() {
         const tk = tdIn.trim(), gk = groqIn.trim();
         setFhKey(fk); setTdKey(tk); setGroqKey(gk); setConnected(true);
         LS.set("fh_key", fk); LS.set("td_key", tk); LS.set("groq_key", gk);
-        loadWatch(fk, watch); loadDetail(active || watch[0], fk, tk); loadIndices();
+        loadWatch(fk, watch); loadSparks(watch); loadDetail(active || watch[0], fk, tk); loadIndices();
       } else throw new Error("ungültig");
     } catch { setConnErr("Finnhub-Verbindung fehlgeschlagen – Key prüfen."); }
     setConnecting(false);
   };
   const disconnect = () => { setConnected(false); setFhKey(""); setTdKey(""); setGroqKey(""); setDetail(null); LS.del("fh_key"); LS.del("td_key"); LS.del("groq_key"); };
-  const addWatch = (e) => { if (!watch.find((x) => keyOf(x) === keyOf(e))) { const wl = [e, ...watch].slice(0, 20); persistWatch(wl); loadWatch(fhKey, [e]); } };
+  const addWatch = (e) => { if (!watch.find((x) => keyOf(x) === keyOf(e))) { const wl = [e, ...watch].slice(0, 20); persistWatch(wl); loadWatch(fhKey, [e]); loadSparks([e]); } };
   const rmWatch = (e) => persistWatch(watch.filter((x) => keyOf(x) !== keyOf(e)));
 
   /* AI analyst (Groq) */
@@ -396,6 +414,21 @@ function App() {
   };
   useEffect(() => { if (connected && tab === "makro" && !Object.keys(macro).length) loadMacro(); }, [connected, tab]);
 
+  /* Peer-Vergleich */
+  const [compare, setCompare] = useState([]); const [compareData, setCompareData] = useState({});
+  const [cmpCmd, setCmpCmd] = useState(""); const [cmpBusy, setCmpBusy] = useState(false);
+  const addCompare = async (q) => {
+    const query = (q ?? cmpCmd).trim(); if (!query || compare.length >= 6) return; setCmpCmd(""); setCmpBusy(true);
+    const resolved = await resolveSymbol(query);
+    if (resolved && !compare.find((x) => keyOf(x) === keyOf(resolved))) {
+      setCompare((p) => [...p, resolved]);
+      try { const det = await getDetail(resolved, fhKey); setCompareData((p) => ({ ...p, [keyOf(resolved)]: det })); }
+      catch (e) { setCompareData((p) => ({ ...p, [keyOf(resolved)]: { s: resolved.s, error: e.message } })); }
+    }
+    setCmpBusy(false);
+  };
+  const rmCompare = (e) => { setCompare((p) => p.filter((x) => keyOf(x) !== keyOf(e))); setCompareData((p) => { const n = { ...p }; delete n[keyOf(e)]; return n; }); };
+
   if (!booted) return <div style={{ background: C.bg, minHeight: "100vh", color: C.amber, fontFamily: mono, display: "flex", alignItems: "center", justifyContent: "center" }}>lädt…</div>;
 
   if (!connected) return (
@@ -431,8 +464,9 @@ function App() {
   const WL = (
     <Panel title="WATCHLIST" style={{ height: "100%" }}>
       {watch.map((e) => { const q = wlQ[keyOf(e)]; const on = keyOf(e) === keyOf(active); const u = (q?.chgPct ?? 0) >= 0;
-        return <div key={keyOf(e)} onClick={() => loadDetail(e)} style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 5, alignItems: "center", padding: "5px 4px", margin: "0 -4px", background: on ? "#17140a" : "transparent", borderLeft: `2px solid ${on ? C.orange : "transparent"}`, cursor: "pointer" }}>
+        return <div key={keyOf(e)} onClick={() => loadDetail(e)} style={{ display: "grid", gridTemplateColumns: "1fr 48px auto auto auto", gap: 5, alignItems: "center", padding: "5px 4px", margin: "0 -4px", background: on ? "#17140a" : "transparent", borderLeft: `2px solid ${on ? C.orange : "transparent"}`, cursor: "pointer" }}>
           <span style={{ color: on ? C.orange : C.white, fontSize: 12 }}>{e.s}</span>
+          <MiniSpark series={sparks[keyOf(e)]} up={u} />
           <span style={{ fontSize: 11, color: C.text }}>{q?.price ?? "—"}</span>
           <span style={{ fontSize: 11, color: u ? C.green : C.red }}>{q?.chgPct != null ? (u ? "+" : "") + q.chgPct + "%" : ""}</span>
           <span onClick={(ev) => { ev.stopPropagation(); rmWatch(e); }} style={{ color: C.muted, fontSize: 12, cursor: "pointer" }}>×</span>
@@ -455,7 +489,7 @@ function App() {
         <span onClick={disconnect} style={{ color: C.muted, fontSize: 10, cursor: "pointer", border: `1px solid ${C.line}`, padding: "2px 6px" }}>LOGOUT</span>
       </div>
       <div style={{ background: "#000", borderBottom: `1px solid ${C.line}`, padding: "5px 12px", display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-        {Fkey("F1 MARKT", "markt", C.amber)}{Fkey("F2 SCANNER", "scanner", C.green)}{Fkey("F3 NEWS", "news", C.red)}{Fkey("F4 MAKRO", "makro", C.blue)}
+        {Fkey("F1 MARKT", "markt", C.amber)}{Fkey("F2 SCANNER", "scanner", C.green)}{Fkey("F3 NEWS", "news", C.red)}{Fkey("F4 MAKRO", "makro", C.blue)}{Fkey("F5 VERGLEICH", "vergleich", "#c07af0")}
         <span style={{ color: C.muted, fontSize: 9, marginLeft: 6 }}>EU:</span>
         {EU_PRESETS.slice(0, 8).map((p) => <button key={p.y} onClick={() => loadDetail(p)} title={p.label} style={{ background: "transparent", color: C.blue, border: `1px solid ${C.line}`, fontSize: 9, padding: "2px 6px", cursor: "pointer", fontFamily: mono }}>{p.s}</button>)}
         <span style={{ color: C.muted, fontSize: 9, marginLeft: 6 }}>ASIA:</span>
@@ -589,6 +623,48 @@ function App() {
                 </Panel>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {tab === "vergleich" && (
+        <div style={{ padding: 8 }}>
+          <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <input value={cmpCmd} onChange={(e) => setCmpCmd(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addCompare()} placeholder="Ticker/Name hinzufügen (z.B. Apple)" style={{ ...inp, width: 280, color: C.white }} />
+            <button onClick={() => addCompare()} disabled={cmpBusy || compare.length >= 6} style={{ background: C.amber, color: "#000", border: "none", padding: "6px 12px", cursor: "pointer", fontFamily: mono, fontWeight: 700, fontSize: 11 }}>{cmpBusy ? "…" : "+ HINZUFÜGEN"}</button>
+            <span style={{ color: C.muted, fontSize: 10 }}>{compare.length}/6</span>
+          </div>
+          <div style={{ background: C.panel, border: `1px solid ${C.line}`, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead><tr>
+                <th style={{ textAlign: "left", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>SYM</th>
+                <th style={{ textAlign: "left", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}`, whiteSpace: "nowrap" }}>NAME</th>
+                <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>KURS</th>
+                <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>%CHG</th>
+                <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>KGV</th>
+                <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>EPS</th>
+                <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>DIV%</th>
+                <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>BETA</th>
+                <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>MKT CAP</th>
+                <th style={{ borderBottom: `1px solid ${C.amberDim}` }}></th>
+              </tr></thead>
+              <tbody>
+                {compare.map((e, i) => { const d = compareData[keyOf(e)]; const u = (d?.chgPct ?? 0) >= 0;
+                  return <tr key={keyOf(e)} style={{ background: i % 2 ? "#0e0f11" : "transparent" }}>
+                    <td style={{ padding: "6px 8px", color: C.orange, cursor: "pointer" }} onClick={() => loadDetail(e)}>{e.s}</td>
+                    <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{d?.error ? "Fehler" : (d?.name ?? "lädt…")}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{d?.price ?? "—"}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", color: u ? C.green : C.red }}>{d?.chgPct != null ? (u ? "+" : "") + d.chgPct + "%" : "—"}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{d?.pe ?? "—"}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{d?.eps ?? "—"}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{d?.divYield ?? "—"}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{d?.beta ?? "—"}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{fmtCap(d?.mktcap)}</td>
+                    <td style={{ padding: "6px 8px" }}><span onClick={() => rmCompare(e)} style={{ color: C.muted, cursor: "pointer" }}>×</span></td>
+                  </tr>; })}
+                {!compare.length && <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", color: C.muted, fontSize: 12 }}>Noch keine Werte zum Vergleich hinzugefügt.</td></tr>}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
