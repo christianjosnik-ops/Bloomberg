@@ -127,8 +127,15 @@ async function yfGet(yticker, range) {
 async function searchSymbol(query) {
   try { const r = await jget(`${YF}?search=${encodeURIComponent(query)}`); return r?.quotes || []; } catch { return []; }
 }
+function localPresetMatch(query) {
+  const q = query.trim().toLowerCase(); if (!q) return null;
+  const all = [...EU_PRESETS, ...ASIA_PRESETS];
+  return all.find((p) => p.s.toLowerCase() === q || p.label.toLowerCase() === q) || all.find((p) => p.label.toLowerCase().includes(q)) || null;
+}
 async function resolveSymbol(query) {
   const q = query.trim(); if (!q) return null;
+  const local = localPresetMatch(q);
+  if (local) return { s: local.s, y: local.y };
   const hits = await searchSymbol(q);
   const hit = hits[0];
   if (!hit) return { s: q.toUpperCase() };
@@ -164,7 +171,7 @@ async function getDetail(e, fhKey) {
     jget(`${FH}/stock/recommendation?symbol=${e.s}&token=${fhKey}`), jget(`${FH}/company-news?symbol=${e.s}&from=${from}&to=${to}&token=${fhKey}`),
     yfGet(e.s).catch(() => null),
   ]);
-  if (!q || q.c == null) throw new Error("Kein Kurs — US-Ticker prüfen, oder für Nicht-US den Preset/Börsen-Ticker nutzen (z.B. RHM.DE).");
+  if (!q || !q.c) throw new Error("Kein Kurs — US-Ticker prüfen, oder für Nicht-US den Preset/Börsen-Ticker nutzen (z.B. RHM.DE).");
   const [nm, sec] = US_NAME[e.s] || [e.s, "—"]; const now = Date.now();
   return {
     s: e.s, region: "US", name: p?.name || nm, sector: p?.finnhubIndustry || sec, currency: "USD",
