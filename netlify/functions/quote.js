@@ -133,9 +133,24 @@ function shape(data, symbol) {
   return out;
 }
 
+async function searchSymbols(query) {
+  const ua = pickUA(); const sess = await getSession(ua);
+  const r = await yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0${q}`, ua, sess);
+  const quotes = (r && Array.isArray(r.quotes)) ? r.quotes : [];
+  return quotes.filter((x) => x.symbol && (x.quoteType === "EQUITY" || x.quoteType === "ETF" || x.quoteType === "INDEX")).slice(0, 8)
+    .map((x) => ({ symbol: x.symbol, name: x.shortname || x.longname || x.symbol, exchange: x.exchDisp || x.exchange || "", type: x.quoteType || "" }));
+}
+
 exports.handler = async (event) => {
   const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type", "Content-Type": "application/json" };
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: cors, body: "" };
+
+  const search = (event.queryStringParameters && event.queryStringParameters.search || "").trim();
+  if (search) {
+    try { return { statusCode: 200, headers: cors, body: JSON.stringify({ quotes: await searchSymbols(search) }) }; }
+    catch (e) { return { statusCode: 500, headers: cors, body: JSON.stringify({ error: String(e && e.message || e) }) }; }
+  }
+
   const symbol = (event.queryStringParameters && event.queryStringParameters.symbol || "").trim();
   if (!symbol) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: "symbol fehlt" }) };
   const rangeIn = (event.queryStringParameters && event.queryStringParameters.range || "6mo").trim();

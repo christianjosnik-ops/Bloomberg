@@ -124,6 +124,24 @@ async function yfGet(yticker, range) {
   if (r?.error) throw new Error(r.error);
   return r;
 }
+async function searchSymbol(query) {
+  try { const r = await jget(`${YF}?search=${encodeURIComponent(query)}`); return r?.quotes || []; } catch { return []; }
+}
+function localPresetMatch(query) {
+  const q = query.trim().toLowerCase(); if (!q) return null;
+  const all = [...EU_PRESETS, ...ASIA_PRESETS];
+  return all.find((p) => p.s.toLowerCase() === q || p.label.toLowerCase() === q) || all.find((p) => p.label.toLowerCase().includes(q)) || null;
+}
+async function resolveSymbol(query) {
+  const q = query.trim(); if (!q) return null;
+  const local = localPresetMatch(q);
+  if (local) return { s: local.s, y: local.y };
+  const hits = await searchSymbol(q);
+  const hit = hits[0];
+  if (!hit) return { s: q.toUpperCase() };
+  const short = hit.symbol.split(".")[0].split("=")[0].replace(/^\^/, "").toUpperCase();
+  return { s: short, y: hit.symbol };
+}
 const CHART_RANGES = [["1d", "1T"], ["5d", "5T"], ["1mo", "1M"], ["6mo", "6M"], ["1y", "1J"], ["5y", "5J"]];
 async function getChart(e, tdKey, range) {
   try { const r = await yfGet(e.y || e.s, range || "6mo"); return { ok: Array.isArray(r.series) && r.series.length > 3, series: r.series || [] }; } catch {}
@@ -153,7 +171,7 @@ async function getDetail(e, fhKey) {
     jget(`${FH}/stock/recommendation?symbol=${e.s}&token=${fhKey}`), jget(`${FH}/company-news?symbol=${e.s}&from=${from}&to=${to}&token=${fhKey}`),
     yfGet(e.s).catch(() => null),
   ]);
-  if (!q || q.c == null) throw new Error("Kein Kurs — US-Ticker prüfen, oder für Nicht-US den Preset/Börsen-Ticker nutzen (z.B. RHM.DE).");
+  if (!q || !q.c) throw new Error("Kein Kurs — US-Ticker prüfen, oder für Nicht-US den Preset/Börsen-Ticker nutzen (z.B. RHM.DE).");
   const [nm, sec] = US_NAME[e.s] || [e.s, "—"]; const now = Date.now();
   return {
     s: e.s, region: "US", name: p?.name || nm, sector: p?.finnhubIndustry || sec, currency: "USD",
@@ -301,6 +319,7 @@ function App() {
     setDLoad(false);
   };
   const changeChartRange = (range) => { setChartRange(range); getChart(active, tdKey, range).then(setChart); };
+  const goCmd = async (q) => { const query = (q ?? cmd).trim(); if (!query) return; setCmd(""); const resolved = await resolveSymbol(query); if (resolved) loadDetail(resolved); };
   const connect = async () => {
     const fk = fhIn.trim(); if (!fk) { setConnErr("Finnhub-Key ist Pflicht (US-Daten)."); return; }
     setConnecting(true); setConnErr("");
@@ -428,7 +447,7 @@ function App() {
         <span style={{ color: C.orange, fontWeight: 700, letterSpacing: 2, fontSize: 13 }}>◈ TERMINAL</span>
         <div style={{ flex: 1, minWidth: 150, display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.amberDim}`, padding: "4px 8px" }}>
           <span style={{ color: C.orange }}>{">"}</span>
-          <input value={cmd} onChange={(e) => setCmd(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (loadDetail({ s: cmd }), setCmd(""))} placeholder="TICKER + GO" style={{ flex: 1, background: "transparent", border: "none", color: C.amber, fontFamily: mono, fontSize: 12, outline: "none", textTransform: "uppercase" }} />
+          <input value={cmd} onChange={(e) => setCmd(e.target.value)} onKeyDown={(e) => e.key === "Enter" && goCmd()} placeholder="TICKER ODER NAME + GO (z.B. Puma)" style={{ flex: 1, background: "transparent", border: "none", color: C.amber, fontFamily: mono, fontSize: 12, outline: "none" }} />
           <span className="caret" style={{ color: C.orange }}>▊</span>
         </div>
         <span style={{ color: C.green, fontSize: 11 }}>● WELT{groqKey ? " · AI" : ""}</span>
@@ -462,7 +481,7 @@ function App() {
                 <div><div style={{ color: C.orange, fontSize: 22, fontWeight: 700 }}>{d.s} <span style={{ color: C.muted, fontSize: 12, fontWeight: 400 }}>{d.name}</span></div><div style={{ color: C.muted, fontSize: 10.5 }}>{d.sector}{d.region === "US" ? " · US" : ""} {dLoad ? "· lädt…" : ""}</div></div>
                 <div style={{ display: "flex", alignItems: "flex-end", gap: 10 }}>
                   {d.price != null && <div style={{ textAlign: "right" }}><div style={{ fontSize: 25, color: up ? C.green : C.red, fontWeight: 700 }}>{d.price} <span style={{ fontSize: 12, color: C.muted }}>{cur}</span></div><div style={{ fontSize: 13, color: up ? C.green : C.red }}>{up ? "▲ +" : "▼ "}{d.chg} ({up ? "+" : ""}{d.chgPct}%)</div></div>}
-                  <button onClick={() => addWatch({ s: d.s })} style={{ background: "transparent", color: C.amber, border: `1px solid ${C.amberDim}`, fontSize: 10, padding: "4px 8px", cursor: "pointer", fontFamily: mono }}>+WL</button>
+                  <button onClick={() => addWatch({ s: d.s, y: active.y })} style={{ background: "transparent", color: C.amber, border: `1px solid ${C.amberDim}`, fontSize: 10, padding: "4px 8px", cursor: "pointer", fontFamily: mono }}>+WL</button>
                 </div>
               </div>
               {d.error && <div style={{ color: C.red, fontSize: 10.5, marginTop: 6 }}>Fehler: {d.error} — Ticker/Börse prüfen.</div>}
