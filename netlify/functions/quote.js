@@ -15,6 +15,10 @@ const num = (x) => (x && typeof x.raw === "number") ? x.raw : (typeof x === "num
 const CACHE = new Map(); const TTL = 90 * 1000;
 let SESSION = { cookie: null, crumb: null, ts: 0 }; const SESSION_TTL = 20 * 60 * 1000;
 
+const RANGE_INTERVAL = {
+  "1d": "5m", "5d": "15m", "1mo": "1d", "6mo": "1d", "1y": "1d", "5y": "1wk",
+};
+
 async function getSession(ua) {
   if (SESSION.cookie && SESSION.crumb && (Date.now() - SESSION.ts) < SESSION_TTL) return SESSION;
   try {
@@ -41,13 +45,14 @@ async function yGet(pathBuilder, ua, sess) {
   return null;
 }
 
-async function fetchAll(symbol) {
+async function fetchAll(symbol, range) {
+  const interval = RANGE_INTERVAL[range] || "1d";
   let last = null;
   for (let attempt = 0; attempt < 4; attempt++) {
     const ua = pickUA(); const sess = await getSession(ua);
-    const chart = await yGet((h, q) => `https://${h}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=6mo&interval=1d${q}`, ua, sess);
+    const chart = await yGet((h, q) => `https://${h}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}${q}`, ua, sess);
     if (chart) {
-      const modules = "assetProfile,summaryDetail,defaultKeyStatistics,financialData,recommendationTrend,price";
+      const modules = "assetProfile,summaryDetail,defaultKeyStatistics,financialData,recommendationTrend,price,calendarEvents";
       const sum = await yGet((h, q) => `https://${h}.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${modules}${q}`, ua, sess);
       return { chart, sum };
     }
@@ -79,11 +84,13 @@ function shape(data, symbol) {
     high: meta.regularMarketDayHigh != null ? +(+meta.regularMarketDayHigh).toFixed(2) : null,
     low: meta.regularMarketDayLow != null ? +(+meta.regularMarketDayLow).toFixed(2) : null,
     series, mktcap: null, pe: null, eps: null, divYield: null, target: null, description: "", sector: "", recos: [],
+    week52Low: null, week52High: null, volume: null, avgVolume: null, beta: null, earningsDate: null,
   };
+  out.volume = meta.regularMarketVolume != null ? +meta.regularMarketVolume : null;
 
   const qs = data.sum && data.sum.quoteSummary && data.sum.quoteSummary.result && data.sum.quoteSummary.result[0];
   if (qs) {
-    const sd = qs.summaryDetail || {}, ks = qs.defaultKeyStatistics || {}, fd = qs.financialData || {}, ap = qs.assetProfile || {};
+    const sd = qs.summaryDetail || {}, ks = qs.defaultKeyStatistics || {}, fd = qs.financialData || {}, ap = qs.assetProfile || {}, ce = qs.calendarEvents || {};
     const rt = (qs.recommendationTrend && qs.recommendationTrend.trend) || [];
     const mc = num(sd.marketCap);
     if (mc != null) out.mktcap = +(mc / 1e9).toFixed(1);
@@ -93,6 +100,12 @@ function shape(data, symbol) {
     out.target = num(fd.targetMeanPrice); if (out.target != null) out.target = +out.target.toFixed(2);
     out.description = (ap.longBusinessSummary || "").slice(0, 600);
     out.sector = ap.sector || "";
+    out.week52Low = num(sd.fiftyTwoWeekLow); if (out.week52Low != null) out.week52Low = +out.week52Low.toFixed(2);
+    out.week52High = num(sd.fiftyTwoWeekHigh); if (out.week52High != null) out.week52High = +out.week52High.toFixed(2);
+    out.avgVolume = num(sd.averageVolume) != null ? Math.round(num(sd.averageVolume)) : null;
+    out.beta = num(ks.beta); if (out.beta != null) out.beta = +out.beta.toFixed(2);
+    const ed = ce.earningsDate && ce.earningsDate[0]; const edVal = num(ed);
+    out.earningsDate = edVal != null ? new Date(edVal * 1000).toISOString().slice(0, 10) : null;
     if (rt.length) out.recos = [{ period: rt[0].period, strongBuy: rt[0].strongBuy, buy: rt[0].buy, hold: rt[0].hold, sell: rt[0].sell, strongSell: rt[0].strongSell }];
   }
   return out;
@@ -103,12 +116,15 @@ exports.handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: cors, body: "" };
   const symbol = (event.queryStringParameters && event.queryStringParameters.symbol || "").trim();
   if (!symbol) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: "symbol fehlt" }) };
+  const rangeIn = (event.queryStringParameters && event.queryStringParameters.range || "6mo").trim();
+  const range = RANGE_INTERVAL[rangeIn] ? rangeIn : "6mo";
+  const cacheKey = `${symbol}:${range}`;
 
-  const cachedVal = CACHE.get(symbol);
+  const cachedVal = CACHE.get(cacheKey);
   if (cachedVal && (Date.now() - cachedVal.ts) < TTL) return { statusCode: 200, headers: { ...cors, "X-Cache": "hit" }, body: JSON.stringify(cachedVal.data) };
 
   try {
-    const data = await fetchAll(symbol);
+    const data = await fetchAll(symbol, range);
     if (data.__error) {
       if (cachedVal) return { statusCode: 200, headers: { ...cors, "X-Cache": "stale" }, body: JSON.stringify(cachedVal.data) };
       return { statusCode: 502, headers: cors, body: JSON.stringify({ error: data.__error + " (Yahoo drosselt, kurz erneut versuchen)" }) };
@@ -118,7 +134,7 @@ exports.handler = async (event) => {
       if (cachedVal) return { statusCode: 200, headers: { ...cors, "X-Cache": "stale" }, body: JSON.stringify(cachedVal.data) };
       return { statusCode: 404, headers: cors, body: JSON.stringify({ error: "Kein Ergebnis (Ticker pruefen)" }) };
     }
-    CACHE.set(symbol, { ts: Date.now(), data: out });
+    CACHE.set(cacheKey, { ts: Date.now(), data: out });
     return { statusCode: 200, headers: { ...cors, "X-Cache": "miss" }, body: JSON.stringify(out) };
   } catch (e) {
     if (cachedVal) return { statusCode: 200, headers: { ...cors, "X-Cache": "stale" }, body: JSON.stringify(cachedVal.data) };
