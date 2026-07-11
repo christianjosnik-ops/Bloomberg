@@ -65,7 +65,9 @@ async function fetchAll(symbol, range) {
       }
       // calendarEvents separat, unabhaengig vom Erfolg der Kernkennzahlen
       const cal = await fetchSum(symbol, ua, sess, "calendarEvents").catch(() => null);
-      return { chart, sum, cal };
+      // Firmen-News separat ueber die Yahoo-Suche (funktioniert weltweit, nicht nur US)
+      const news = await yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&newsCount=8&quotesCount=0${q}`, ua, sess).catch(() => null);
+      return { chart, sum, cal, news };
     }
     last = "429/blockiert";
     if (attempt < 3) await sleep(500 + attempt * 700);
@@ -95,9 +97,16 @@ function shape(data, symbol) {
     high: meta.regularMarketDayHigh != null ? +(+meta.regularMarketDayHigh).toFixed(2) : null,
     low: meta.regularMarketDayLow != null ? +(+meta.regularMarketDayLow).toFixed(2) : null,
     series, mktcap: null, pe: null, eps: null, divYield: null, target: null, description: "", sector: "", recos: [],
-    week52Low: null, week52High: null, volume: null, avgVolume: null, beta: null, earningsDate: null,
+    week52Low: null, week52High: null, volume: null, avgVolume: null, beta: null, earningsDate: null, news: [],
   };
   out.volume = meta.regularMarketVolume != null ? +meta.regularMarketVolume : null;
+
+  const newsItems = (data.news && Array.isArray(data.news.news)) ? data.news.news : [];
+  out.news = newsItems.slice(0, 8).map((n) => ({
+    headline: n.title, source: (n.publisher || "NEWS").toUpperCase().slice(0, 10),
+    ago: n.providerPublishTime ? Math.max(1, Math.floor((Date.now() - n.providerPublishTime * 1000) / 6e4)) : 1,
+    summary: "", url: n.link, tags: [symbol],
+  })).filter((n) => n.headline);
 
   const qs = data.sum && data.sum.quoteSummary && data.sum.quoteSummary.result && data.sum.quoteSummary.result[0];
   const calQs = data.cal && data.cal.quoteSummary && data.cal.quoteSummary.result && data.cal.quoteSummary.result[0];
