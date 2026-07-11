@@ -63,16 +63,16 @@ const ASIA_PRESETS = [
   { s: "ALIBABA", y: "9988.HK", label: "Alibaba HK" }, { s: "TSMC-TW", y: "2330.TW", label: "TSMC Taiwan" },
 ];
 const MACRO_PRESETS = [
-  { id: "UNRATE", label: "Arbeitslosenquote", unit: "%", years: 10 },
-  { id: "CPIAUCSL", label: "Verbraucherpreise (CPI)", unit: "Index", years: 10 },
-  { id: "FEDFUNDS", label: "Fed Funds Rate", unit: "%", years: 10 },
-  { id: "DGS10", label: "US-Staatsanleihen 10J", unit: "%", years: 1 },
-  { id: "T10Y2Y", label: "Zinskurve 10J–2J", unit: "%", years: 1 },
-  { id: "GDP", label: "BIP (nominal)", unit: "Mrd $", years: 30 },
-  { id: "PAYEMS", label: "Beschäftigte (Nonfarm)", unit: "Tsd", years: 10 },
-  { id: "UMCSENT", label: "Verbrauchervertrauen", unit: "Index", years: 10 },
-  { id: "MORTGAGE30US", label: "Hypothekenzins 30J", unit: "%", years: 3 },
-  { id: "M2SL", label: "Geldmenge M2", unit: "Mrd $", years: 10 },
+  { id: "UNRATE", label: "Arbeitslosenquote", unit: "%" },
+  { id: "CPIAUCSL", label: "Verbraucherpreise (CPI)", unit: "Index" },
+  { id: "FEDFUNDS", label: "Fed Funds Rate", unit: "%" },
+  { id: "DGS10", label: "US-Staatsanleihen 10J", unit: "%" },
+  { id: "T10Y2Y", label: "Zinskurve 10J–2J", unit: "%" },
+  { id: "GDP", label: "BIP (nominal)", unit: "Mrd $" },
+  { id: "PAYEMS", label: "Beschäftigte (Nonfarm)", unit: "Tsd" },
+  { id: "UMCSENT", label: "Verbrauchervertrauen", unit: "Index" },
+  { id: "MORTGAGE30US", label: "Hypothekenzins 30J", unit: "%" },
+  { id: "M2SL", label: "Geldmenge M2", unit: "Mrd $" },
 ];
 const INDEX_PRESETS = [
   { s: "SPX", y: "^GSPC", label: "S&P 500" }, { s: "NDX", y: "^IXIC", label: "Nasdaq" },
@@ -100,10 +100,8 @@ const jget = (u) => fetch(u).then((r) => r.json());
 const keyOf = (e) => e.y || e.s;
 const YF = "/.netlify/functions/quote";
 const FRED_FN = "/.netlify/functions/fred";
-async function fredGet(id, years) {
-  const r = await jget(`${FRED_FN}?id=${encodeURIComponent(id)}&years=${years || 10}`);
-  if (r?.error) throw new Error(r.error);
-  return r;
+async function fredGetBatch(ids) {
+  return jget(`${FRED_FN}?ids=${encodeURIComponent(ids.join(","))}`);
 }
 
 /* ================= LocalStorage persistence (standalone file, no window.storage) ================= */
@@ -145,7 +143,7 @@ async function getDetail(e, fhKey) {
       price: r.price, chg: r.chg, chgPct: r.chgPct, open: r.open, high: r.high, low: r.low, prevClose: r.prevClose,
       mktcap: r.mktcap, pe: r.pe, eps: r.eps, divYield: r.divYield, target: r.target,
       week52Low: r.week52Low, week52High: r.week52High, volume: r.volume, avgVolume: r.avgVolume, beta: r.beta, earningsDate: r.earningsDate,
-      recos: r.recos || [], news: [],
+      recos: r.recos || [], news: r.news || [],
     };
   }
   // US-Wert über Finnhub (mit Empfehlungen + News) + Yahoo (52W/Beta/Volumen)
@@ -231,9 +229,8 @@ function DayRange({ d }) {
     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: C.muted, marginTop: 4 }}><span>Open {d.open}</span><span style={{ color: (d.chg ?? 0) >= 0 ? C.green : C.red }}>Kurs {d.price}</span><span>Vortag {d.prevClose}</span></div>
   </div>);
 }
-function RecoBar({ recos, region }) {
-  if (region === "EU") return <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.5 }}>Analysten-Empfehlungen nur für US-Werte (Datenquelle Finnhub).</div>;
-  if (!recos?.length) return <div style={{ color: C.muted, fontSize: 11 }}>Keine Empfehlungsdaten.</div>;
+function RecoBar({ recos }) {
+  if (!recos?.length) return <div style={{ color: C.muted, fontSize: 11 }}>Keine Empfehlungsdaten verfügbar.</div>;
   const cur = recos[0]; const segs = [["strongSell", C.red, "S.Sell"], ["sell", "#ff7a45", "Sell"], ["hold", C.muted, "Hold"], ["buy", C.green, "Buy"], ["strongBuy", "#17a760", "S.Buy"]];
   const total = segs.reduce((a, [k]) => a + (cur[k] || 0), 0) || 1;
   const score = (cur.strongBuy * 2 + cur.buy - cur.sell - cur.strongSell * 2) / total;
@@ -244,8 +241,7 @@ function RecoBar({ recos, region }) {
     <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>{segs.slice().reverse().map(([k, col, l]) => <div key={k} style={{ textAlign: "center", flex: 1 }}><div style={{ color: col, fontSize: 13, fontWeight: 700 }}>{cur[k] || 0}</div><div style={{ color: C.muted, fontSize: 8 }}>{l}</div></div>)}</div>
   </div>);
 }
-function NewsList({ items, onTag, region }) {
-  if (region === "EU") return <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.5 }}>Firmen-News nur für US-Werte. Allgemeine Marktnews im News-Tab (F3).</div>;
+function NewsList({ items, onTag }) {
   if (!items?.length) return <div style={{ color: C.muted, fontSize: 11 }}>Keine Meldungen.</div>;
   return items.map((n, i) => (<div key={i} style={{ padding: "8px 0", borderBottom: i < items.length - 1 ? `1px solid ${C.line}` : "none" }}>
     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, marginBottom: 2 }}><span style={{ color: C.blue }}>{n.source}</span><span style={{ color: C.muted }}>{ago(n.ago)}</span></div>
@@ -376,9 +372,8 @@ function App() {
   const [macro, setMacro] = useState({}); const [macroBusy, setMacroBusy] = useState(false);
   const loadMacro = async () => {
     setMacroBusy(true);
-    const out = {};
-    await Promise.all(MACRO_PRESETS.map(async (m) => { try { out[m.id] = await fredGet(m.id, m.years); } catch (e) { out[m.id] = { error: e.message }; } }));
-    setMacro((p) => ({ ...p, ...out })); setMacroBusy(false);
+    try { const out = await fredGetBatch(MACRO_PRESETS.map((m) => m.id)); setMacro((p) => ({ ...p, ...out })); } catch {}
+    setMacroBusy(false);
   };
   useEffect(() => { if (connected && tab === "makro" && !Object.keys(macro).length) loadMacro(); }, [connected, tab]);
 
@@ -486,9 +481,9 @@ function App() {
                 <Stat k="KGV" v={d.pe ?? "—"} /><Stat k="EPS" v={d.eps ?? "—"} /><Stat k="DIV.-RENDITE" v={d.divYield != null ? d.divYield + "%" : "—"} />
                 <Stat k="KURSZIEL" v={d.target ?? "—"} /><Stat k="NÄCHSTE ZAHLEN" v={d.earningsDate || "—"} />
               </Panel>
-              <Panel title="ANALYSTEN-EMPFEHLUNG"><RecoBar recos={d.recos} region={d.region === "US" ? "US" : "EU"} /></Panel>
+              <Panel title="ANALYSTEN-EMPFEHLUNG"><RecoBar recos={d.recos} /></Panel>
             </div>
-            <Panel title={`NEWS · ${d.s}`} style={{ marginBottom: 8 }}><NewsList items={d.news} onTag={loadDetail} region={d.region === "US" ? "US" : "EU"} /></Panel>
+            <Panel title={`NEWS · ${d.s}`} style={{ marginBottom: 8 }}><NewsList items={d.news} onTag={loadDetail} /></Panel>
             {window.innerWidth <= 980 && <div>{WL}</div>}
           </div>
 
@@ -547,7 +542,7 @@ function App() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: digest || digBusy ? 8 : 0 }}><span style={{ color: C.orange, fontSize: 11, letterSpacing: 1, fontWeight: 700 }}>◆ KI-EINORDNUNG</span><button onClick={genDigest} disabled={digBusy || !nRows.length} style={{ background: "transparent", color: C.amber, border: `1px solid ${C.amberDim}`, fontSize: 10, padding: "4px 10px", cursor: "pointer", fontFamily: mono }}>{digBusy ? "analysiere…" : "Einordnung generieren"}</button></div>
             {digest && <div style={{ fontSize: 12.5, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{digest}</div>}
           </div>
-          <div style={{ background: C.panel, border: `1px solid ${C.line}`, padding: "2px 12px" }}><NewsList items={nRows} onTag={loadDetail} region="US" /></div>
+          <div style={{ background: C.panel, border: `1px solid ${C.line}`, padding: "2px 12px" }}><NewsList items={nRows} onTag={loadDetail} /></div>
         </div>
       )}
 
