@@ -45,6 +45,10 @@ async function yGet(pathBuilder, ua, sess) {
   return null;
 }
 
+const CORE_MODULES = "assetProfile,summaryDetail,defaultKeyStatistics,financialData,recommendationTrend,price";
+async function fetchSum(symbol, ua, sess, modules) {
+  return yGet((h, q) => `https://${h}.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${modules}${q}`, ua, sess);
+}
 async function fetchAll(symbol, range) {
   const interval = RANGE_INTERVAL[range] || "1d";
   let last = null;
@@ -52,9 +56,16 @@ async function fetchAll(symbol, range) {
     const ua = pickUA(); const sess = await getSession(ua);
     const chart = await yGet((h, q) => `https://${h}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}${q}`, ua, sess);
     if (chart) {
-      const modules = "assetProfile,summaryDetail,defaultKeyStatistics,financialData,recommendationTrend,price,calendarEvents";
-      const sum = await yGet((h, q) => `https://${h}.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${modules}${q}`, ua, sess);
-      return { chart, sum };
+      let sum = await fetchSum(symbol, ua, sess, CORE_MODULES);
+      if (!sum) {
+        // Crumb/Session koennte abgelaufen sein - einmal mit frischer Session erneut versuchen
+        SESSION = { cookie: null, crumb: null, ts: 0 };
+        const sess2 = await getSession(pickUA());
+        sum = await fetchSum(symbol, ua, sess2, CORE_MODULES);
+      }
+      // calendarEvents separat, unabhaengig vom Erfolg der Kernkennzahlen
+      const cal = await fetchSum(symbol, ua, sess, "calendarEvents").catch(() => null);
+      return { chart, sum, cal };
     }
     last = "429/blockiert";
     if (attempt < 3) await sleep(500 + attempt * 700);
@@ -89,8 +100,10 @@ function shape(data, symbol) {
   out.volume = meta.regularMarketVolume != null ? +meta.regularMarketVolume : null;
 
   const qs = data.sum && data.sum.quoteSummary && data.sum.quoteSummary.result && data.sum.quoteSummary.result[0];
+  const calQs = data.cal && data.cal.quoteSummary && data.cal.quoteSummary.result && data.cal.quoteSummary.result[0];
   if (qs) {
-    const sd = qs.summaryDetail || {}, ks = qs.defaultKeyStatistics || {}, fd = qs.financialData || {}, ap = qs.assetProfile || {}, ce = qs.calendarEvents || {};
+    const sd = qs.summaryDetail || {}, ks = qs.defaultKeyStatistics || {}, fd = qs.financialData || {}, ap = qs.assetProfile || {};
+    const ce = (calQs && calQs.calendarEvents) || {};
     const rt = (qs.recommendationTrend && qs.recommendationTrend.trend) || [];
     const mc = num(sd.marketCap);
     if (mc != null) out.mktcap = +(mc / 1e9).toFixed(1);
