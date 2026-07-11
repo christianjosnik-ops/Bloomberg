@@ -62,6 +62,18 @@ const ASIA_PRESETS = [
   { s: "SAMSUNG", y: "005930.KS", label: "Samsung" }, { s: "TENCENT", y: "0700.HK", label: "Tencent" },
   { s: "ALIBABA", y: "9988.HK", label: "Alibaba HK" }, { s: "TSMC-TW", y: "2330.TW", label: "TSMC Taiwan" },
 ];
+const MACRO_PRESETS = [
+  { id: "UNRATE", label: "Arbeitslosenquote", unit: "%" },
+  { id: "CPIAUCSL", label: "Verbraucherpreise (CPI)", unit: "Index" },
+  { id: "FEDFUNDS", label: "Fed Funds Rate", unit: "%" },
+  { id: "DGS10", label: "US-Staatsanleihen 10J", unit: "%" },
+  { id: "T10Y2Y", label: "Zinskurve 10J–2J", unit: "%" },
+  { id: "GDP", label: "BIP (nominal)", unit: "Mrd $" },
+  { id: "PAYEMS", label: "Beschäftigte (Nonfarm)", unit: "Tsd" },
+  { id: "UMCSENT", label: "Verbrauchervertrauen", unit: "Index" },
+  { id: "MORTGAGE30US", label: "Hypothekenzins 30J", unit: "%" },
+  { id: "M2SL", label: "Geldmenge M2", unit: "Mrd $" },
+];
 const US_UNIVERSE = [
   ["AAPL", "Apple Inc", "Technology"], ["MSFT", "Microsoft", "Technology"], ["NVDA", "NVIDIA", "Technology"], ["GOOGL", "Alphabet", "Technology"],
   ["META", "Meta Platforms", "Technology"], ["AMD", "Adv Micro Dev", "Technology"], ["AVGO", "Broadcom", "Technology"], ["TSM", "TSMC", "Technology"],
@@ -80,6 +92,12 @@ const FH = "https://finnhub.io/api/v1", TD = "https://api.twelvedata.com";
 const jget = (u) => fetch(u).then((r) => r.json());
 const keyOf = (e) => e.y || e.s;
 const YF = "/.netlify/functions/quote";
+const FRED_FN = "/.netlify/functions/fred";
+async function fredGet(id) {
+  const r = await jget(`${FRED_FN}?id=${encodeURIComponent(id)}`);
+  if (r?.error) throw new Error(r.error);
+  return r;
+}
 
 /* ================= LocalStorage persistence (standalone file, no window.storage) ================= */
 const LS = {
@@ -326,6 +344,16 @@ function App() {
   };
   useEffect(() => { if (connected && tab === "news" && !nRows.length) loadNews(); }, [connected, tab]);
 
+  /* Makro (FRED) */
+  const [macro, setMacro] = useState({}); const [macroBusy, setMacroBusy] = useState(false);
+  const loadMacro = async () => {
+    setMacroBusy(true);
+    const out = {};
+    await Promise.all(MACRO_PRESETS.map(async (m) => { try { out[m.id] = await fredGet(m.id); } catch (e) { out[m.id] = { error: e.message }; } }));
+    setMacro((p) => ({ ...p, ...out })); setMacroBusy(false);
+  };
+  useEffect(() => { if (connected && tab === "makro" && !Object.keys(macro).length) loadMacro(); }, [connected, tab]);
+
   if (!booted) return <div style={{ background: C.bg, minHeight: "100vh", color: C.amber, fontFamily: mono, display: "flex", alignItems: "center", justifyContent: "center" }}>lädt…</div>;
 
   if (!connected) return (
@@ -385,7 +413,7 @@ function App() {
         <span onClick={disconnect} style={{ color: C.muted, fontSize: 10, cursor: "pointer", border: `1px solid ${C.line}`, padding: "2px 6px" }}>LOGOUT</span>
       </div>
       <div style={{ background: "#000", borderBottom: `1px solid ${C.line}`, padding: "5px 12px", display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-        {Fkey("F1 MARKT", "markt", C.amber)}{Fkey("F2 SCANNER", "scanner", C.green)}{Fkey("F3 NEWS", "news", C.red)}
+        {Fkey("F1 MARKT", "markt", C.amber)}{Fkey("F2 SCANNER", "scanner", C.green)}{Fkey("F3 NEWS", "news", C.red)}{Fkey("F4 MAKRO", "makro", C.blue)}
         <span style={{ color: C.muted, fontSize: 9, marginLeft: 6 }}>EU:</span>
         {EU_PRESETS.slice(0, 8).map((p) => <button key={p.y} onClick={() => loadDetail(p)} title={p.label} style={{ background: "transparent", color: C.blue, border: `1px solid ${C.line}`, fontSize: 9, padding: "2px 6px", cursor: "pointer", fontFamily: mono }}>{p.s}</button>)}
         <span style={{ color: C.muted, fontSize: 9, marginLeft: 6 }}>ASIA:</span>
@@ -470,6 +498,34 @@ function App() {
             {digest && <div style={{ fontSize: 12.5, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{digest}</div>}
           </div>
           <div style={{ background: C.panel, border: `1px solid ${C.line}`, padding: "2px 12px" }}><NewsList items={nRows} onTag={loadDetail} region="US" /></div>
+        </div>
+      )}
+
+      {tab === "makro" && (
+        <div style={{ padding: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ color: C.muted, fontSize: 10.5 }}>US-Konjunkturdaten · Quelle: FRED (St. Louis Fed)</span>
+            <button onClick={loadMacro} disabled={macroBusy} style={{ background: "transparent", color: C.amber, border: `1px solid ${C.amberDim}`, fontSize: 10, padding: "4px 10px", cursor: "pointer", fontFamily: mono }}>{macroBusy ? "…" : "↻ AKTUALISIEREN"}</button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 8 }}>
+            {MACRO_PRESETS.map((m) => {
+              const d = macro[m.id]; const dUp = (d?.chg ?? 0) >= 0;
+              return (
+                <Panel key={m.id} title={m.label}>
+                  {!d && <div style={{ color: C.muted, fontSize: 11 }}>{macroBusy ? "lädt…" : "—"}</div>}
+                  {d?.error && <div style={{ color: C.red, fontSize: 11 }}>Fehler: {d.error}</div>}
+                  {d && !d.error && (<>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                      <span style={{ fontSize: 20, fontWeight: 700, color: C.white }}>{d.latest ?? "—"} <span style={{ fontSize: 11, color: C.muted }}>{m.unit}</span></span>
+                      {d.chg != null && <span style={{ fontSize: 12, color: dUp ? C.green : C.red }}>{dUp ? "+" : ""}{d.chg}</span>}
+                    </div>
+                    <div style={{ fontSize: 9.5, color: C.muted, marginBottom: 4 }}>Stand: {d.latestDate || "—"}</div>
+                    {d.series?.length > 3 ? <SvgChart series={d.series.map((s) => ({ t: s.t, p: s.v }))} up={dUp} /> : <div style={{ color: C.muted, fontSize: 10 }}>Kein Chart.</div>}
+                  </>)}
+                </Panel>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
