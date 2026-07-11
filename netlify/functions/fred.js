@@ -9,12 +9,15 @@ exports.handler = async (event) => {
 
   const id = (event.queryStringParameters && event.queryStringParameters.id || "").trim().toUpperCase();
   if (!id || !/^[A-Z0-9]{1,20}$/.test(id)) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: "id fehlt/ungueltig" }) };
+  const years = Math.min(50, Math.max(1, parseInt((event.queryStringParameters && event.queryStringParameters.years) || "10", 10) || 10));
 
-  const c = CACHE.get(id);
+  const cacheKey = `${id}:${years}`;
+  const c = CACHE.get(cacheKey);
   if (c && Date.now() - c.ts < TTL) return { statusCode: 200, headers: { ...cors, "X-Cache": "hit" }, body: JSON.stringify(c.data) };
 
   try {
-    const url = `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(id)}`;
+    const cosd = new Date(); cosd.setFullYear(cosd.getFullYear() - years);
+    const url = `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(id)}&cosd=${cosd.toISOString().slice(0, 10)}`;
     const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/csv,*/*" } });
     if (!res.ok) return { statusCode: 502, headers: cors, body: JSON.stringify({ error: `FRED HTTP ${res.status}` }) };
     const txt = await res.text();
@@ -34,7 +37,7 @@ exports.handler = async (event) => {
       chg: (latest && prev) ? +(latest.v - prev.v).toFixed(2) : null,
       series,
     };
-    CACHE.set(id, { ts: Date.now(), data });
+    CACHE.set(cacheKey, { ts: Date.now(), data });
     return { statusCode: 200, headers: { ...cors, "X-Cache": "miss" }, body: JSON.stringify(data) };
   } catch (e) {
     return { statusCode: 500, headers: cors, body: JSON.stringify({ error: String(e && e.message || e) }) };
