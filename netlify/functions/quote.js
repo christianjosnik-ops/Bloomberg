@@ -49,13 +49,14 @@ const CORE_MODULES = "assetProfile,summaryDetail,defaultKeyStatistics,financialD
 async function fetchSum(symbol, ua, sess, modules) {
   return yGet((h, q) => `https://${h}.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${modules}${q}`, ua, sess);
 }
-async function fetchAll(symbol, range) {
+async function fetchAll(symbol, range, chartOnly) {
   const interval = RANGE_INTERVAL[range] || "1d";
   let last = null;
   for (let attempt = 0; attempt < 4; attempt++) {
     const ua = pickUA(); const sess = await getSession(ua);
     const chart = await yGet((h, q) => `https://${h}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}${q}`, ua, sess);
     if (chart) {
+      if (chartOnly) return { chart };
       let sum = await fetchSum(symbol, ua, sess, CORE_MODULES);
       if (!sum) {
         // Crumb/Session koennte abgelaufen sein - einmal mit frischer Session erneut versuchen
@@ -155,13 +156,14 @@ exports.handler = async (event) => {
   if (!symbol) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: "symbol fehlt" }) };
   const rangeIn = (event.queryStringParameters && event.queryStringParameters.range || "6mo").trim();
   const range = RANGE_INTERVAL[rangeIn] ? rangeIn : "6mo";
-  const cacheKey = `${symbol}:${range}`;
+  const chartOnly = event.queryStringParameters && (event.queryStringParameters.chartOnly === "1" || event.queryStringParameters.chartOnly === "true");
+  const cacheKey = `${symbol}:${range}${chartOnly ? ":co" : ""}`;
 
   const cachedVal = CACHE.get(cacheKey);
   if (cachedVal && (Date.now() - cachedVal.ts) < TTL) return { statusCode: 200, headers: { ...cors, "X-Cache": "hit" }, body: JSON.stringify(cachedVal.data) };
 
   try {
-    const data = await fetchAll(symbol, range);
+    const data = await fetchAll(symbol, range, chartOnly);
     if (data.__error) {
       if (cachedVal) return { statusCode: 200, headers: { ...cors, "X-Cache": "stale" }, body: JSON.stringify(cachedVal.data) };
       return { statusCode: 502, headers: cors, body: JSON.stringify({ error: data.__error + " (Yahoo drosselt, kurz erneut versuchen)" }) };
