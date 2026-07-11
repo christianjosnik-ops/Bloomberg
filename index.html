@@ -161,7 +161,7 @@ async function getDetail(e, fhKey) {
       price: r.price, chg: r.chg, chgPct: r.chgPct, open: r.open, high: r.high, low: r.low, prevClose: r.prevClose,
       mktcap: r.mktcap, pe: r.pe, eps: r.eps, divYield: r.divYield, target: r.target,
       week52Low: r.week52Low, week52High: r.week52High, volume: r.volume, avgVolume: r.avgVolume, beta: r.beta, earningsDate: r.earningsDate,
-      recos: r.recos || [], news: r.news || [],
+      recos: r.recos || [], news: r.news || [], financials: r.financials || [],
     };
   }
   // US-Wert über Finnhub (mit Empfehlungen + News) + Yahoo (52W/Beta/Volumen)
@@ -179,6 +179,7 @@ async function getDetail(e, fhKey) {
     open: q?.o, high: q?.h, low: q?.l, prevClose: q?.pc, mktcap: p?.marketCapitalization ? +(p.marketCapitalization / 1000).toFixed(1) : null,
     pe: yx?.pe ?? null, eps: yx?.eps ?? null, divYield: yx?.divYield ?? null, target: yx?.target ?? null,
     week52Low: yx?.week52Low ?? null, week52High: yx?.week52High ?? null, volume: yx?.volume ?? null, avgVolume: yx?.avgVolume ?? null, beta: yx?.beta ?? null, earningsDate: yx?.earningsDate ?? null,
+    financials: yx?.financials || [],
     recos: Array.isArray(rec) ? rec.slice(0, 4).map((x) => ({ period: x.period, strongBuy: x.strongBuy, buy: x.buy, hold: x.hold, sell: x.sell, strongSell: x.strongSell })) : [],
     news: Array.isArray(news) ? news.slice(0, 8).map((n) => ({ headline: n.headline, source: (n.source || "NEWS").toUpperCase().slice(0, 10), ago: Math.max(1, Math.floor((now - n.datetime * 1000) / 6e4)), summary: n.summary || "", url: n.url, tags: [e.s] })) : [],
   };
@@ -201,18 +202,44 @@ async function askGroq(groqKey, systemPrompt, historyMsgs, latest) {
   return data?.choices?.[0]?.message?.content?.trim() || "Keine Antwort.";
 }
 
-/* ================= Chart (rendert Kursverlauf von Twelve Data) ================= */
-function SvgChart({ series, up }) {
+/* ================= Technische Indikatoren ================= */
+function sma(vals, period) {
+  const out = new Array(vals.length).fill(null);
+  let sum = 0;
+  for (let i = 0; i < vals.length; i++) {
+    sum += vals[i];
+    if (i >= period) sum -= vals[i - period];
+    if (i >= period - 1) out[i] = sum / period;
+  }
+  return out;
+}
+function rsi(vals, period) {
+  const out = new Array(vals.length).fill(null);
+  if (vals.length < period + 1) return out;
+  let gain = 0, loss = 0;
+  for (let i = 1; i <= period; i++) { const d = vals[i] - vals[i - 1]; if (d >= 0) gain += d; else loss -= d; }
+  gain /= period; loss /= period;
+  out[period] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
+  for (let i = period + 1; i < vals.length; i++) {
+    const d = vals[i] - vals[i - 1]; const g = d > 0 ? d : 0, l = d < 0 ? -d : 0;
+    gain = (gain * (period - 1) + g) / period; loss = (loss * (period - 1) + l) / period;
+    out[i] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
+  }
+  return out;
+}
+
+/* ================= Chart (rendert Kursverlauf von Yahoo) ================= */
+function SvgChart({ series, up, overlays }) {
   if (!series || series.length < 3) return null;
   const w = 600, h = 200, pad = 8;
   const vals = series.map((d) => d.p);
-  const min = Math.min(...vals), max = Math.max(...vals);
+  const overlayVals = (overlays || []).flatMap((o) => o.vals.filter((v) => v != null));
+  const allVals = [...vals, ...overlayVals];
+  const min = Math.min(...allVals), max = Math.max(...allVals);
   const range = max - min || 1;
-  const pts = series.map((d, i) => {
-    const x = pad + (i / (series.length - 1)) * (w - pad * 2);
-    const y = h - pad - ((d.p - min) / range) * (h - pad * 2);
-    return [x, y];
-  });
+  const xAt = (i) => pad + (i / (series.length - 1)) * (w - pad * 2);
+  const yAt = (v) => h - pad - ((v - min) / range) * (h - pad * 2);
+  const pts = series.map((d, i) => [xAt(i), yAt(d.p)]);
   const line = pts.map((p, i) => (i === 0 ? `M${p[0]},${p[1]}` : `L${p[0]},${p[1]}`)).join(" ");
   const area = `${line} L${pts[pts.length - 1][0]},${h - pad} L${pts[0][0]},${h - pad} Z`;
   const col = up ? C.green : C.red;
@@ -222,18 +249,69 @@ function SvgChart({ series, up }) {
       <defs><linearGradient id={gid} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={col} stopOpacity="0.35" /><stop offset="100%" stopColor={col} stopOpacity="0" /></linearGradient></defs>
       <path d={area} fill={`url(#${gid})`} />
       <path d={line} fill="none" stroke={col} strokeWidth="1.6" />
+      {(overlays || []).map((o, oi) => {
+        const segs = []; let cur = [];
+        o.vals.forEach((v, i) => { if (v == null) { if (cur.length > 1) segs.push(cur); cur = []; return; } cur.push([xAt(i), yAt(v)]); });
+        if (cur.length > 1) segs.push(cur);
+        return segs.map((seg, si) => <path key={oi + "-" + si} d={seg.map((p, i) => (i === 0 ? `M${p[0]},${p[1]}` : `L${p[0]},${p[1]}`)).join(" ")} fill="none" stroke={o.color} strokeWidth="1.2" opacity="0.9" />);
+      })}
+    </svg>
+  );
+}
+function VolumeChart({ series }) {
+  const vols = series.map((d) => d.v).filter((v) => v != null);
+  if (vols.length < 3) return null;
+  const w = 600, h = 44;
+  const max = Math.max(...vols) || 1;
+  const bw = w / series.length;
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: 44, display: "block", marginTop: 4 }} preserveAspectRatio="none">
+      {series.map((d, i) => d.v == null ? null : <rect key={i} x={i * bw} y={h - (d.v / max) * h} width={Math.max(bw - 1, 0.5)} height={(d.v / max) * h} fill={C.muted} opacity="0.55" />)}
+    </svg>
+  );
+}
+function RSIChart({ vals }) {
+  const pts = vals.map((v, i) => (v == null ? null : [i, v])).filter(Boolean);
+  if (pts.length < 3) return null;
+  const w = 600, h = 46;
+  const xAt = (i) => (i / (vals.length - 1)) * w;
+  const yAt = (v) => h - (v / 100) * h;
+  const line = pts.map((p, i) => `${i === 0 ? "M" : "L"}${xAt(p[0])},${yAt(p[1])}`).join(" ");
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: 46, display: "block", marginTop: 4 }} preserveAspectRatio="none">
+      <line x1="0" y1={yAt(70)} x2={w} y2={yAt(70)} stroke={C.red} strokeWidth="0.6" strokeDasharray="3,3" opacity="0.5" />
+      <line x1="0" y1={yAt(30)} x2={w} y2={yAt(30)} stroke={C.green} strokeWidth="0.6" strokeDasharray="3,3" opacity="0.5" />
+      <path d={line} fill="none" stroke={C.blue} strokeWidth="1.3" />
     </svg>
   );
 }
 
-function MiniSpark({ series, up }) {
-  if (!series || series.length < 2) return null;
-  const w = 48, h = 20;
-  const vals = series.map((d) => d.p);
-  const min = Math.min(...vals), max = Math.max(...vals);
-  const range = max - min || 1;
-  const pts = series.map((d, i) => `${(i / (series.length - 1)) * w},${h - ((d.p - min) / range) * h}`).join(" ");
-  return <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none"><polyline points={pts} fill="none" stroke={up ? C.green : C.red} strokeWidth="1.3" /></svg>;
+function FinancialsChart({ data }) {
+  if (!data || data.length < 2) return null;
+  const w = 600, h = 130, pad = 18;
+  const vals = data.flatMap((d) => [d.revenue, d.earnings]).filter((v) => v != null);
+  if (!vals.length) return null;
+  const max = Math.max(...vals, 0), min = Math.min(...vals, 0);
+  const range = (max - min) || 1;
+  const zeroY = h - pad - ((0 - min) / range) * (h - pad * 2);
+  const bw = (w - pad * 2) / data.length;
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: 130, display: "block" }} preserveAspectRatio="none">
+      <line x1={pad} y1={zeroY} x2={w - pad} y2={zeroY} stroke={C.line} strokeWidth="1" />
+      {data.map((d, i) => {
+        const x0 = pad + i * bw;
+        const rH = d.revenue != null ? (Math.abs(d.revenue) / range) * (h - pad * 2) : 0;
+        const eH = d.earnings != null ? (Math.abs(d.earnings) / range) * (h - pad * 2) : 0;
+        return (
+          <g key={i}>
+            {d.revenue != null && <rect x={x0 + bw * 0.15} y={d.revenue >= 0 ? zeroY - rH : zeroY} width={bw * 0.3} height={rH} fill={C.blue} opacity="0.85" />}
+            {d.earnings != null && <rect x={x0 + bw * 0.55} y={d.earnings >= 0 ? zeroY - eH : zeroY} width={bw * 0.3} height={eH} fill={d.earnings >= 0 ? C.green : C.red} opacity="0.85" />}
+            <text x={x0 + bw / 2} y={h - 4} fontSize="9" fill={C.muted} textAnchor="middle">{d.year}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
 }
 
 /* ================= Atoms ================= */
@@ -291,17 +369,17 @@ function App() {
   const [watch, setWatch] = useState([{ s: "NVDA" }, { s: "AAPL" }, { s: "RHM", y: "RHM.DE" }, { s: "TOYOTA", y: "7203.T" }]);
   const [wlQ, setWlQ] = useState({});
   const [idxQ, setIdxQ] = useState({});
-  const [sparks, setSparks] = useState({});
   const [active, setActive] = useState({ s: "NVDA" });
   const [detail, setDetail] = useState(null); const [dLoad, setDLoad] = useState(false);
   const [chart, setChart] = useState({ ok: false, series: [] });
   const [chartRange, setChartRange] = useState("6mo");
+  const [showSMA, setShowSMA] = useState(true); const [showVol, setShowVol] = useState(true); const [showRSI, setShowRSI] = useState(true);
   const [cmd, setCmd] = useState("");
 
   useEffect(() => {
     const fk = LS.get("fh_key") || "", tk = LS.get("td_key") || "", gk = LS.get("groq_key") || "", wl = LS.get("watch2");
     if (wl?.length) { setWatch(wl); setActive(wl[0]); }
-    if (fk) { setFhKey(fk); setTdKey(tk); setGroqKey(gk); setConnected(true); const use = wl?.length ? wl : watch; loadWatch(fk, use); loadSparks(use); loadDetail(use[0], fk, tk); loadIndices(); }
+    if (fk) { setFhKey(fk); setTdKey(tk); setGroqKey(gk); setConnected(true); const use = wl?.length ? wl : watch; loadWatch(fk, use); loadDetail(use[0], fk, tk); loadIndices(); }
     setBooted(true);
     const iv = setInterval(() => setClock(new Date().toLocaleTimeString("de-DE")), 1000);
     return () => clearInterval(iv);
@@ -314,13 +392,6 @@ function App() {
     const out = {};
     for (const e of wl) { try { out[keyOf(e)] = await getQuoteLite(e, fk); } catch {} }
     setWlQ((p) => ({ ...p, ...out }));
-  };
-  const loadSparks = async (wl) => {
-    const out = {};
-    await Promise.all(wl.map(async (e) => {
-      try { const r = await jget(`${YF}?symbol=${encodeURIComponent(e.y || e.s)}&range=1mo&chartOnly=1`); if (r?.series?.length > 2) out[keyOf(e)] = r.series; } catch {}
-    }));
-    setSparks((p) => ({ ...p, ...out }));
   };
   const loadIndices = async () => {
     const out = {};
@@ -347,13 +418,13 @@ function App() {
         const tk = tdIn.trim(), gk = groqIn.trim();
         setFhKey(fk); setTdKey(tk); setGroqKey(gk); setConnected(true);
         LS.set("fh_key", fk); LS.set("td_key", tk); LS.set("groq_key", gk);
-        loadWatch(fk, watch); loadSparks(watch); loadDetail(active || watch[0], fk, tk); loadIndices();
+        loadWatch(fk, watch); loadDetail(active || watch[0], fk, tk); loadIndices();
       } else throw new Error("ungültig");
     } catch { setConnErr("Finnhub-Verbindung fehlgeschlagen – Key prüfen."); }
     setConnecting(false);
   };
   const disconnect = () => { setConnected(false); setFhKey(""); setTdKey(""); setGroqKey(""); setDetail(null); LS.del("fh_key"); LS.del("td_key"); LS.del("groq_key"); };
-  const addWatch = (e) => { if (!watch.find((x) => keyOf(x) === keyOf(e))) { const wl = [e, ...watch].slice(0, 20); persistWatch(wl); loadWatch(fhKey, [e]); loadSparks([e]); } };
+  const addWatch = (e) => { if (!watch.find((x) => keyOf(x) === keyOf(e))) { const wl = [e, ...watch].slice(0, 20); persistWatch(wl); loadWatch(fhKey, [e]); } };
   const rmWatch = (e) => persistWatch(watch.filter((x) => keyOf(x) !== keyOf(e)));
 
   /* AI analyst (Groq) */
@@ -464,9 +535,9 @@ function App() {
   const WL = (
     <Panel title="WATCHLIST" style={{ height: "100%" }}>
       {watch.map((e) => { const q = wlQ[keyOf(e)]; const on = keyOf(e) === keyOf(active); const u = (q?.chgPct ?? 0) >= 0;
-        return <div key={keyOf(e)} onClick={() => loadDetail(e)} style={{ display: "grid", gridTemplateColumns: "1fr 48px auto auto auto", gap: 5, alignItems: "center", padding: "5px 4px", margin: "0 -4px", background: on ? "#17140a" : "transparent", borderLeft: `2px solid ${on ? C.orange : "transparent"}`, cursor: "pointer" }}>
+        return <div key={keyOf(e)} onClick={() => loadDetail(e)} style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto auto", gap: 5, alignItems: "center", padding: "5px 4px", margin: "0 -4px", background: on ? "#17140a" : "transparent", borderLeft: `2px solid ${on ? C.orange : "transparent"}`, cursor: "pointer" }}>
           <span style={{ color: on ? C.orange : C.white, fontSize: 12 }}>{e.s}</span>
-          <MiniSpark series={sparks[keyOf(e)]} up={u} />
+          <span style={{ fontSize: 12, color: q ? (u ? C.green : C.red) : C.muted }}>{q ? (u ? "▲" : "▼") : "·"}</span>
           <span style={{ fontSize: 11, color: C.text }}>{q?.price ?? "—"}</span>
           <span style={{ fontSize: 11, color: u ? C.green : C.red }}>{q?.chgPct != null ? (u ? "+" : "") + q.chgPct + "%" : ""}</span>
           <span onClick={(ev) => { ev.stopPropagation(); rmWatch(e); }} style={{ color: C.muted, fontSize: 12, cursor: "pointer" }}>×</span>
@@ -522,7 +593,16 @@ function App() {
             </Panel>
 
             <Panel title={`CHART · ${d.s}`} right={<div style={{ display: "flex", gap: 3 }}>{CHART_RANGES.map(([r, l]) => <button key={r} onClick={() => changeChartRange(r)} style={{ background: chartRange === r ? C.amber : "transparent", color: chartRange === r ? "#000" : C.muted, border: `1px solid ${chartRange === r ? C.amber : C.line}`, fontSize: 9, padding: "2px 6px", cursor: "pointer", fontFamily: mono }}>{l}</button>)}</div>} style={{ marginBottom: 8 }}>
-              {chart.ok && chart.series.length > 3 ? <SvgChart series={chart.series} up={up} /> : <div style={{ color: C.muted, fontSize: 11, padding: "8px 0" }}>Chart lädt / für diesen Ticker nicht verfügbar.</div>}
+              {chart.ok && chart.series.length > 3 ? (<>
+                <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+                  <button onClick={() => setShowSMA((v) => !v)} style={{ background: showSMA ? C.blue : "transparent", color: showSMA ? "#000" : C.muted, border: `1px solid ${showSMA ? C.blue : C.line}`, fontSize: 9, padding: "2px 6px", cursor: "pointer", fontFamily: mono }}>SMA 20/50</button>
+                  <button onClick={() => setShowVol((v) => !v)} style={{ background: showVol ? C.muted : "transparent", color: showVol ? "#000" : C.muted, border: `1px solid ${C.line}`, fontSize: 9, padding: "2px 6px", cursor: "pointer", fontFamily: mono }}>VOL</button>
+                  <button onClick={() => setShowRSI((v) => !v)} style={{ background: showRSI ? C.blue : "transparent", color: showRSI ? "#000" : C.muted, border: `1px solid ${showRSI ? C.blue : C.line}`, fontSize: 9, padding: "2px 6px", cursor: "pointer", fontFamily: mono }}>RSI(14)</button>
+                </div>
+                <SvgChart series={chart.series} up={up} overlays={showSMA ? [{ vals: sma(chart.series.map((s) => s.p), 20), color: C.blue }, { vals: sma(chart.series.map((s) => s.p), 50), color: C.amber }] : []} />
+                {showVol && <VolumeChart series={chart.series} />}
+                {showRSI && <RSIChart vals={rsi(chart.series.map((s) => s.p), 14)} />}
+              </>) : <div style={{ color: C.muted, fontSize: 11, padding: "8px 0" }}>Chart lädt / für diesen Ticker nicht verfügbar.</div>}
               <DayRange d={d} />
             </Panel>
 
@@ -536,6 +616,15 @@ function App() {
               </Panel>
               <Panel title="ANALYSTEN-EMPFEHLUNG"><RecoBar recos={d.recos} /></Panel>
             </div>
+            {d.financials?.length > 1 && (
+              <Panel title="UMSATZ & GEWINN (JÄHRLICH)" style={{ marginBottom: 8 }}>
+                <div style={{ display: "flex", gap: 12, fontSize: 9.5, color: C.muted, marginBottom: 4 }}>
+                  <span><span style={{ color: C.blue }}>■</span> Umsatz</span>
+                  <span><span style={{ color: C.green }}>■</span> Gewinn</span>
+                </div>
+                <FinancialsChart data={d.financials} />
+              </Panel>
+            )}
             <Panel title={`NEWS · ${d.s}`} style={{ marginBottom: 8 }}><NewsList items={d.news} onTag={loadDetail} /></Panel>
             {window.innerWidth <= 980 && <div>{WL}</div>}
           </div>

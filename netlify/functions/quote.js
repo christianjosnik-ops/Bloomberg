@@ -49,14 +49,13 @@ const CORE_MODULES = "assetProfile,summaryDetail,defaultKeyStatistics,financialD
 async function fetchSum(symbol, ua, sess, modules) {
   return yGet((h, q) => `https://${h}.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${modules}${q}`, ua, sess);
 }
-async function fetchAll(symbol, range, chartOnly) {
+async function fetchAll(symbol, range) {
   const interval = RANGE_INTERVAL[range] || "1d";
   let last = null;
   for (let attempt = 0; attempt < 4; attempt++) {
     const ua = pickUA(); const sess = await getSession(ua);
     const chart = await yGet((h, q) => `https://${h}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}${q}`, ua, sess);
     if (chart) {
-      if (chartOnly) return { chart };
       let sum = await fetchSum(symbol, ua, sess, CORE_MODULES);
       if (!sum) {
         // Crumb/Session koennte abgelaufen sein - einmal mit frischer Session erneut versuchen
@@ -68,7 +67,9 @@ async function fetchAll(symbol, range, chartOnly) {
       const cal = await fetchSum(symbol, ua, sess, "calendarEvents").catch(() => null);
       // Firmen-News separat ueber die Yahoo-Suche (funktioniert weltweit, nicht nur US)
       const news = await yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&newsCount=8&quotesCount=0${q}`, ua, sess).catch(() => null);
-      return { chart, sum, cal, news };
+      // Mehrjaehrige Umsatz/Gewinn-Historie separat, unabhaengig vom Erfolg der Kernkennzahlen
+      const earn = await fetchSum(symbol, ua, sess, "earnings").catch(() => null);
+      return { chart, sum, cal, news, earn };
     }
     last = "429/blockiert";
     if (attempt < 3) await sleep(500 + attempt * 700);
@@ -82,9 +83,9 @@ function shape(data, symbol) {
   const meta = result.meta;
   const ts = result.timestamp || [];
   const q = (result.indicators && result.indicators.quote && result.indicators.quote[0]) || {};
-  const closes = q.close || [];
+  const closes = q.close || []; const volumes = q.volume || [];
   const series = [];
-  for (let i = 0; i < ts.length; i++) { const c = closes[i]; if (c != null && !isNaN(c)) series.push({ t: new Date(ts[i] * 1000).toISOString().slice(0, 10), p: +(+c).toFixed(2) }); }
+  for (let i = 0; i < ts.length; i++) { const c = closes[i]; if (c != null && !isNaN(c)) series.push({ t: new Date(ts[i] * 1000).toISOString().slice(0, 10), p: +(+c).toFixed(2), v: volumes[i] != null ? +volumes[i] : null }); }
   const price = meta.regularMarketPrice != null ? +(+meta.regularMarketPrice).toFixed(2) : (series.length ? series[series.length - 1].p : null);
   const prevClose = meta.chartPreviousClose != null ? +(+meta.chartPreviousClose).toFixed(2) : (meta.previousClose != null ? +(+meta.previousClose).toFixed(2) : (series.length > 1 ? series[series.length - 2].p : null));
   const chg = (price != null && prevClose != null) ? +(price - prevClose).toFixed(2) : null;
@@ -98,7 +99,7 @@ function shape(data, symbol) {
     high: meta.regularMarketDayHigh != null ? +(+meta.regularMarketDayHigh).toFixed(2) : null,
     low: meta.regularMarketDayLow != null ? +(+meta.regularMarketDayLow).toFixed(2) : null,
     series, mktcap: null, pe: null, eps: null, divYield: null, target: null, description: "", sector: "", recos: [],
-    week52Low: null, week52High: null, volume: null, avgVolume: null, beta: null, earningsDate: null, news: [],
+    week52Low: null, week52High: null, volume: null, avgVolume: null, beta: null, earningsDate: null, news: [], financials: [],
   };
   out.volume = meta.regularMarketVolume != null ? +meta.regularMarketVolume : null;
 
@@ -108,6 +109,10 @@ function shape(data, symbol) {
     ago: n.providerPublishTime ? Math.max(1, Math.floor((Date.now() - n.providerPublishTime * 1000) / 6e4)) : 1,
     summary: "", url: n.link, tags: [symbol],
   })).filter((n) => n.headline);
+
+  const earnQs = data.earn && data.earn.quoteSummary && data.earn.quoteSummary.result && data.earn.quoteSummary.result[0];
+  const yearly = (earnQs && earnQs.earnings && earnQs.earnings.financialsChart && earnQs.earnings.financialsChart.yearly) || [];
+  out.financials = yearly.map((y) => ({ year: y.date, revenue: num(y.revenue), earnings: num(y.earnings) })).filter((y) => y.year != null);
 
   const qs = data.sum && data.sum.quoteSummary && data.sum.quoteSummary.result && data.sum.quoteSummary.result[0];
   const calQs = data.cal && data.cal.quoteSummary && data.cal.quoteSummary.result && data.cal.quoteSummary.result[0];
@@ -156,14 +161,13 @@ exports.handler = async (event) => {
   if (!symbol) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: "symbol fehlt" }) };
   const rangeIn = (event.queryStringParameters && event.queryStringParameters.range || "6mo").trim();
   const range = RANGE_INTERVAL[rangeIn] ? rangeIn : "6mo";
-  const chartOnly = event.queryStringParameters && (event.queryStringParameters.chartOnly === "1" || event.queryStringParameters.chartOnly === "true");
-  const cacheKey = `${symbol}:${range}${chartOnly ? ":co" : ""}`;
+  const cacheKey = `${symbol}:${range}`;
 
   const cachedVal = CACHE.get(cacheKey);
   if (cachedVal && (Date.now() - cachedVal.ts) < TTL) return { statusCode: 200, headers: { ...cors, "X-Cache": "hit" }, body: JSON.stringify(cachedVal.data) };
 
   try {
-    const data = await fetchAll(symbol, range, chartOnly);
+    const data = await fetchAll(symbol, range);
     if (data.__error) {
       if (cachedVal) return { statusCode: 200, headers: { ...cors, "X-Cache": "stale" }, body: JSON.stringify(cachedVal.data) };
       return { statusCode: 502, headers: cors, body: JSON.stringify({ error: data.__error + " (Yahoo drosselt, kurz erneut versuchen)" }) };
