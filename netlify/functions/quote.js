@@ -65,8 +65,12 @@ async function fetchAll(symbol, range) {
       }
       // calendarEvents separat, unabhaengig vom Erfolg der Kernkennzahlen
       const cal = await fetchSum(symbol, ua, sess, "calendarEvents").catch(() => null);
-      // Firmen-News separat ueber die Yahoo-Suche (funktioniert weltweit, nicht nur US)
-      const news = await yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&newsCount=8&quotesCount=0${q}`, ua, sess).catch(() => null);
+      // Firmen-News separat ueber die Yahoo-Suche (funktioniert weltweit, nicht nur US).
+      // Suche mit dem vollen Firmennamen statt dem rohen Ticker - liefert deutlich
+      // treffsicherere, wirklich zum Unternehmen passende Ergebnisse.
+      const meta0 = chart.chart && chart.chart.result && chart.chart.result[0] && chart.chart.result[0].meta;
+      const newsQuery = (meta0 && (meta0.longName || meta0.shortName)) || symbol;
+      const news = await yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(newsQuery)}&newsCount=12&quotesCount=0${q}`, ua, sess).catch(() => null);
       // Mehrjaehrige Umsatz/Gewinn-Historie separat, unabhaengig vom Erfolg der Kernkennzahlen
       const earn = await fetchSum(symbol, ua, sess, "earnings").catch(() => null);
       return { chart, sum, cal, news, earn };
@@ -103,12 +107,23 @@ function shape(data, symbol) {
   };
   out.volume = meta.regularMarketVolume != null ? +meta.regularMarketVolume : null;
 
+  const baseSym = symbol.split(".")[0].toUpperCase();
   const newsItems = (data.news && Array.isArray(data.news.news)) ? data.news.news : [];
-  out.news = newsItems.slice(0, 8).map((n) => ({
-    headline: n.title, source: (n.publisher || "NEWS").toUpperCase().slice(0, 10),
-    ago: n.providerPublishTime ? Math.max(1, Math.floor((Date.now() - n.providerPublishTime * 1000) / 6e4)) : 1,
-    summary: "", url: n.link, tags: [symbol],
-  })).filter((n) => n.headline);
+  out.news = newsItems
+    .filter((n) => n.title)
+    .map((n) => {
+      const related = Array.isArray(n.relatedTickers) ? n.relatedTickers.map((t) => t.toUpperCase()) : [];
+      return {
+        headline: n.title, source: (n.publisher || "NEWS").toUpperCase().slice(0, 10),
+        ago: n.providerPublishTime ? Math.max(1, Math.floor((Date.now() - n.providerPublishTime * 1000) / 6e4)) : 1,
+        date: n.providerPublishTime ? new Date(n.providerPublishTime * 1000).toISOString().slice(0, 16).replace("T", " ") : "",
+        summary: "", url: n.link, tags: [symbol],
+        _relevant: related.includes(symbol.toUpperCase()) || related.includes(baseSym) ? 1 : 0,
+      };
+    })
+    .sort((a, b) => b._relevant - a._relevant)
+    .slice(0, 10)
+    .map(({ _relevant, ...n }) => n);
 
   const earnQs = data.earn && data.earn.quoteSummary && data.earn.quoteSummary.result && data.earn.quoteSummary.result[0];
   const yearly = (earnQs && earnQs.earnings && earnQs.earnings.financialsChart && earnQs.earnings.financialsChart.yearly) || [];

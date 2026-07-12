@@ -350,7 +350,7 @@ function RecoBar({ recos }) {
 function NewsList({ items, onTag }) {
   if (!items?.length) return <div style={{ color: C.muted, fontSize: 11 }}>Keine Meldungen.</div>;
   return items.map((n, i) => (<div key={i} style={{ padding: "8px 0", borderBottom: i < items.length - 1 ? `1px solid ${C.line}` : "none" }}>
-    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, marginBottom: 2 }}><span style={{ color: C.blue }}>{n.source}</span><span style={{ color: C.muted }}>{ago(n.ago)}</span></div>
+    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, marginBottom: 2 }}><span style={{ color: C.blue }}>{n.source}</span><span style={{ color: C.muted }}>{ago(n.ago)}{n.date ? " · " + n.date : ""}</span></div>
     {n.url ? <a href={n.url} target="_blank" rel="noreferrer" style={{ color: C.white, fontSize: 12, lineHeight: 1.35, textDecoration: "none" }}>{n.headline}</a> : <div style={{ color: C.white, fontSize: 12, lineHeight: 1.35 }}>{n.headline}</div>}
     {n.summary && <div style={{ color: C.muted, fontSize: 10, marginTop: 2, lineHeight: 1.4 }}>{n.summary}</div>}
     {n.tags?.length > 0 && <div style={{ display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap" }}>{n.tags.map((t) => <span key={t} onClick={() => onTag?.({ s: t, m: "US" })} style={{ color: C.amber, fontSize: 8.5, border: `1px solid ${C.amberDim}`, padding: "1px 4px", cursor: onTag ? "pointer" : "default" }}>{t}</span>)}</div>}
