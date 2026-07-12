@@ -508,10 +508,15 @@ function App() {
   useEffect(() => { if (connected && tab === "news" && !nRows.length) loadNews(); }, [connected, tab]);
 
   /* Makro (FRED) */
-  const [macro, setMacro] = useState({}); const [macroBusy, setMacroBusy] = useState(false);
+  const [macro, setMacro] = useState({}); const [macroBusy, setMacroBusy] = useState(false); const [macroErr, setMacroErr] = useState("");
   const loadMacro = async () => {
-    setMacroBusy(true);
-    try { const out = await fredGetBatch(MACRO_PRESETS.map((m) => m.id)); setMacro((p) => ({ ...p, ...out })); } catch {}
+    setMacroBusy(true); setMacroErr("");
+    try {
+      const out = await fredGetBatch(MACRO_PRESETS.map((m) => m.id));
+      if (!out || typeof out !== "object") throw new Error("Leere/ungültige Antwort vom Server");
+      if (out.error) throw new Error(out.error);
+      setMacro((p) => ({ ...p, ...out }));
+    } catch (e) { setMacroErr((e && e.message) || "Unbekannter Fehler beim Laden"); }
     setMacroBusy(false);
   };
   useEffect(() => { if (connected && tab === "makro" && !Object.keys(macro).length) loadMacro(); }, [connected, tab]);
@@ -741,6 +746,7 @@ function App() {
             <span style={{ color: C.muted, fontSize: 10.5 }}>US-Konjunkturdaten · Quelle: FRED (St. Louis Fed)</span>
             <button onClick={loadMacro} disabled={macroBusy} style={{ background: "transparent", color: C.amber, border: `1px solid ${C.amberDim}`, fontSize: 10, padding: "4px 10px", cursor: "pointer", fontFamily: mono }}>{macroBusy ? "…" : "↻ AKTUALISIEREN"}</button>
           </div>
+          {macroErr && <div style={{ background: "#1a0808", border: `1px solid ${C.red}`, color: C.red, fontSize: 11, padding: "8px 12px", marginBottom: 8 }}>Fehler beim Laden der Makrodaten: {macroErr}</div>}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 8 }}>
             {MACRO_PRESETS.map((m) => {
               const d = macro[m.id]; const dUp = (d?.chg ?? 0) >= 0;
