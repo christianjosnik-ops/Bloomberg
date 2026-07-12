@@ -377,6 +377,7 @@ function App() {
   const [showSMA, setShowSMA] = useState(true); const [showVol, setShowVol] = useState(true); const [showRSI, setShowRSI] = useState(true);
   const [cmd, setCmd] = useState("");
   const [suggestions, setSuggestions] = useState([]);
+  const suggestSeq = useRef(0);
 
   useEffect(() => {
     const fk = LS.get("fh_key") || "", tk = LS.get("td_key") || "", gk = LS.get("groq_key") || "", wl = LS.get("watch2");
@@ -392,7 +393,7 @@ function App() {
   const persistWatch = (wl) => { setWatch(wl); LS.set("watch2", wl); };
   const loadWatch = async (fk, wl) => {
     const out = {};
-    for (const e of wl) { try { out[keyOf(e)] = await getQuoteLite(e, fk); } catch {} }
+    await Promise.all(wl.map(async (e) => { try { out[keyOf(e)] = await getQuoteLite(e, fk); } catch {} }));
     setWlQ((p) => ({ ...p, ...out }));
   };
   const loadIndices = async () => {
@@ -426,12 +427,14 @@ function App() {
   useEffect(() => {
     const q = cmd.trim();
     if (q.length < 2) { setSuggestions([]); return; }
+    suggestSeq.current += 1; const mySeq = suggestSeq.current;
     const t = setTimeout(async () => {
       const ql = q.toLowerCase();
       const local = [...EU_PRESETS, ...ASIA_PRESETS]
         .filter((p) => p.label.toLowerCase().includes(ql) || p.s.toLowerCase().includes(ql))
         .map((p) => ({ symbol: p.y, name: p.label, exchange: "" }));
       const net = await searchSymbol(q);
+      if (mySeq !== suggestSeq.current) return; // veraltete Antwort - neuere Eingabe existiert bereits
       const merged = [...local, ...net.filter((h) => !local.find((l) => l.symbol === h.symbol))].slice(0, 8);
       setSuggestions(merged);
     }, 300);
