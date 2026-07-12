@@ -156,7 +156,13 @@ function shape(data, symbol) {
 
 async function searchSymbols(query) {
   const ua = pickUA(); const sess = await getSession(ua);
-  const r = await yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0${q}`, ua, sess);
+  let r = await yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0${q}`, ua, sess);
+  if (!r || !Array.isArray(r.quotes)) {
+    // Crumb/Session koennte abgelaufen sein - einmal mit frischer Session erneut versuchen
+    SESSION = { cookie: null, crumb: null, ts: 0 };
+    const sess2 = await getSession(pickUA());
+    r = await yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0${q}`, ua, sess2);
+  }
   const quotes = (r && Array.isArray(r.quotes)) ? r.quotes : [];
   return quotes.filter((x) => x.symbol && (x.quoteType === "EQUITY" || x.quoteType === "ETF" || x.quoteType === "INDEX")).slice(0, 8)
     .map((x) => ({ symbol: x.symbol, name: x.shortname || x.longname || x.symbol, exchange: x.exchDisp || x.exchange || "", type: x.quoteType || "" }));
