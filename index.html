@@ -377,6 +377,7 @@ function App() {
   const [showSMA, setShowSMA] = useState(true); const [showVol, setShowVol] = useState(true); const [showRSI, setShowRSI] = useState(true);
   const [cmd, setCmd] = useState("");
   const [suggestions, setSuggestions] = useState([]);
+  const [suggestDone, setSuggestDone] = useState(false);
   const suggestSeq = useRef(0);
 
   useEffect(() => {
@@ -426,6 +427,7 @@ function App() {
   };
   useEffect(() => {
     const q = cmd.trim();
+    setSuggestDone(false);
     if (q.length < 2) { setSuggestions([]); return; }
     suggestSeq.current += 1; const mySeq = suggestSeq.current;
     const t = setTimeout(async () => {
@@ -436,7 +438,7 @@ function App() {
       const net = await searchSymbol(q);
       if (mySeq !== suggestSeq.current) return; // veraltete Antwort - neuere Eingabe existiert bereits
       const merged = [...local, ...net.filter((h) => !local.find((l) => l.symbol === h.symbol))].slice(0, 8);
-      setSuggestions(merged);
+      setSuggestions(merged); setSuggestDone(true);
     }, 300);
     return () => clearTimeout(t);
   }, [cmd]);
@@ -592,8 +594,9 @@ function App() {
             <input value={cmd} onChange={(e) => setCmd(e.target.value)} onKeyDown={(e) => e.key === "Enter" && goCmd()} onBlur={() => setTimeout(() => setSuggestions([]), 150)} placeholder="TICKER ODER NAME + GO (z.B. Puma)" style={{ flex: 1, background: "transparent", border: "none", color: C.amber, fontFamily: mono, fontSize: 12, outline: "none" }} />
             <span className="caret" style={{ color: C.orange }}>▊</span>
           </div>
-          {suggestions.length > 0 && (
+          {cmd.trim().length >= 2 && (suggestions.length > 0 || suggestDone) && (
             <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, background: C.panel, border: `1px solid ${C.amberDim}`, borderTop: "none", maxHeight: 260, overflowY: "auto" }}>
+              {suggestions.length === 0 && suggestDone && <div style={{ padding: "8px 9px", color: C.muted, fontSize: 11 }}>Keine Treffer für "{cmd.trim()}".</div>}
               {suggestions.map((s, i) => (
                 <div key={s.symbol + i} onMouseDown={() => selectSuggestion(s)} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 9px", cursor: "pointer", borderBottom: i < suggestions.length - 1 ? `1px solid ${C.line}` : "none" }}>
                   <span style={{ color: C.white, fontSize: 12 }}>{s.name}</span>

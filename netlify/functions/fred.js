@@ -16,9 +16,15 @@ async function fetchOne(id, yearsIn) {
   const url = `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(id)}&cosd=${cosd.toISOString().slice(0, 10)}`;
   const ctrl = new AbortController();
   const to = setTimeout(() => ctrl.abort(), 7000);
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/csv,text/plain,*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://fred.stlouisfed.org/",
+  };
   let res;
   try {
-    res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/csv,*/*" }, signal: ctrl.signal });
+    res = await fetch(url, { headers, signal: ctrl.signal });
   } catch (e) {
     return { error: ctrl.signal.aborted ? "FRED Timeout" : String(e && e.message || e) };
   } finally {
