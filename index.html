@@ -126,6 +126,17 @@ const METRIC_META = {
 // Working-Capital-/Verschuldungskennzahlen ergeben fuer Banken/Versicherer kein sinnvolles Bild
 // (siehe Edge-Case-Vorgabe) - werden fuer diese Gruppen ausgeblendet statt Unsinn anzuzeigen.
 const RATIO_SUPPRESS_FOR_FINANCIALS = ["currentRatio", "quickRatio", "cashRatio", "netDebt", "netDebtToEbitda", "interestCoverage", "debtToEquity", "equityRatio", "dso", "dio", "dpo", "ccc"];
+
+/* ================= F6 WELTLAGE: Metadaten ================= */
+const GEO_LEVEL_META = {
+  "kritisch": { color: "#ff4d4d", order: 4, label: "KRITISCH" },
+  "hoch": { color: "#ff7a45", order: 3, label: "HOCH" },
+  "mittel": { color: "#ffb000", order: 2, label: "MITTEL" },
+  "niedrig": { color: "#d9c05a", order: 1, label: "NIEDRIG" },
+  "keine": { color: "#7f858f", order: 0, label: "KEINE" },
+  "nicht geprüft": { color: "#7f858f", order: -1, label: "N/GEPRÜFT" },
+};
+const geoLevelMeta = (level) => GEO_LEVEL_META[level] || GEO_LEVEL_META["keine"];
 const ago = (m) => (m < 60 ? m + "m" : Math.floor(m / 60) + "h");
 const FH = "https://finnhub.io/api/v1", TD = "https://api.twelvedata.com";
 const jget = (u) => fetch(u).then((r) => r.json());
@@ -560,6 +571,140 @@ function RatioPanel({ ratioTickers, ratioData, ratioView, ratioBusy, ratioAddCmd
   </>);
 }
 
+/* ================= F6 WELTLAGE ================= */
+// Echte Weltkarte als Erweiterung: laedt oeffentliche Laendergrenzen (GeoJSON)
+// zur Laufzeit im Browser per CDN, genau wie React/Babel schon per <script src>
+// geladen werden. Kann hier nicht getestet werden (kein Netzwerkzugriff in der
+// Entwicklungsumgebung) - faellt deshalb bei jedem Fehler (Netzwerk, falsches
+// Format, leere Antwort) still auf world=false zurueck. Die Elternkomponente
+// (GeoPanel) zeigt in dem Fall einfach nur die Laenderliste, die unabhaengig
+// davon funktioniert.
+function GeoWorldMap({ geo, geoSel, setGeoSel }) {
+  const [world, setWorld] = useState(null); // null=laedt, false=nicht verfuegbar, Array=Features
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("https://cdn.jsdelivr.net/gh/johan/world.geo.json@master/countries.geo.json");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const gj = await res.json();
+        const features = gj && Array.isArray(gj.features) ? gj.features : null;
+        if (!features || !features.length) throw new Error("keine Features in der Antwort");
+        if (!cancelled) setWorld(features);
+      } catch (e) { if (!cancelled) setWorld(false); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  if (world === null) return <div style={{ color: C.muted, fontSize: 11, padding: "8px 0" }}>Weltkarte lädt…</div>;
+  if (world === false) return null; // stiller Fallback, Liste unten deckt die Funktion weiterhin ab
+
+  const W = 960, H = 500;
+  const project = (lon, lat) => [((lon + 180) / 360) * W, ((90 - lat) / 180) * H];
+  const ringPath = (ring) => ring.map((pt, i) => { const [x, y] = project(pt[0], pt[1]); return (i === 0 ? "M" : "L") + x.toFixed(1) + "," + y.toFixed(1); }).join(" ") + "Z";
+  const geomPath = (geom) => {
+    if (!geom) return "";
+    if (geom.type === "Polygon") return geom.coordinates.map(ringPath).join(" ");
+    if (geom.type === "MultiPolygon") return geom.coordinates.map((poly) => poly.map(ringPath).join(" ")).join(" ");
+    return "";
+  };
+  const isoOf = (f) => String(f.id || (f.properties && (f.properties.iso_a3 || f.properties.ISO_A3 || f.properties.iso3)) || "").toUpperCase();
+
+  return (
+    <div style={{ background: C.panel, border: `1px solid ${C.line}`, padding: 8, marginBottom: 8 }}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block", background: "#050608" }}>
+        {world.map((f, i) => {
+          const iso = isoOf(f);
+          const entry = geo && geo.countries ? geo.countries[iso] : null;
+          const d = geomPath(f.geometry);
+          if (!d) return null;
+          const on = iso === geoSel;
+          return (
+            <path key={i} d={d} fill={entry ? geoLevelMeta(entry.level).color : "#1b1d21"} fillOpacity={entry ? 0.85 : 0.5}
+              stroke={on ? C.amber : "#000"} strokeWidth={on ? 1.2 : 0.4}
+              onClick={() => entry && setGeoSel(on ? null : iso)} style={{ cursor: entry ? "pointer" : "default" }} />
+          );
+        })}
+      </svg>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 6, fontSize: 9.5 }}>
+        {Object.entries(GEO_LEVEL_META).filter(([k]) => k !== "nicht geprüft").map(([k, m]) => (
+          <span key={k} style={{ color: C.muted }}><span style={{ display: "inline-block", width: 8, height: 8, background: m.color, marginRight: 4 }} />{m.label}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo }) {
+  const countries = geo ? Object.values(geo.countries) : [];
+  const sorted = countries.slice().sort((a, b) => {
+    const d = geoLevelMeta(b.level).order - geoLevelMeta(a.level).order;
+    return d !== 0 ? d : b.gdeltCount - a.gdeltCount;
+  });
+  const selCountry = geoSel ? countries.find((c) => c.iso3 === geoSel) : null;
+
+  return (
+    <div style={{ padding: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
+        <span style={{ color: C.muted, fontSize: 10.5 }}>Geopolitische Risikoübersicht · GDELT (Nachrichtenvolumen) + ReliefWeb/UN OCHA (aktuelle Krisen)</span>
+        <button onClick={loadGeo} disabled={geoBusy} style={{ background: "transparent", color: C.amber, border: `1px solid ${C.amberDim}`, fontSize: 10, padding: "4px 10px", cursor: "pointer", fontFamily: mono }}>{geoBusy ? "…" : "↻ AKTUALISIEREN"}</button>
+      </div>
+
+      <div style={{ background: C.panel2, border: `1px solid ${C.line}`, padding: "7px 12px", marginBottom: 8, fontSize: 10, color: C.muted }}>
+        <div>Beobachtete Länder: aktive ReliefWeb-Krisen + eine von Hand kuratierte, kurze Liste geopolitisch dauerhaft relevanter Staaten (max. 20). <b style={{ color: C.text }}>Keine erschöpfende Weltabdeckung.</b></div>
+        <div>Stufe kombiniert: GDELT-Artikelvolumen (Konflikt-Schlagwörter, 3 Tage) + ob ReliefWeb aktuell eine Krise für das Land führt. {geo?.generatedAt && <span>Stand: {new Date(geo.generatedAt).toLocaleString("de-DE")}</span>}</div>
+        {geo?.reliefwebError && <div style={{ color: C.amber, marginTop: 2 }}>⚠ ReliefWeb nicht erreichbar ({geo.reliefwebError}) — nur feste Länderliste + GDELT aktiv.</div>}
+      </div>
+
+      {geoErr && <div style={{ background: "#1a0808", border: `1px solid ${C.red}`, color: C.red, fontSize: 11, padding: "8px 12px", marginBottom: 8 }}>Fehler beim Laden: {geoErr}</div>}
+      {geoBusy && !geo && <div style={{ color: C.muted, fontSize: 11, padding: 12 }}>lädt…</div>}
+
+      {sorted.length > 0 && <GeoWorldMap geo={geo} geoSel={geoSel} setGeoSel={setGeoSel} />}
+
+      {sorted.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 6, marginBottom: 8 }}>
+          {sorted.map((c) => {
+            const meta = geoLevelMeta(c.level); const on = geoSel === c.iso3;
+            return (
+              <div key={c.iso3} onClick={() => setGeoSel(on ? null : c.iso3)}
+                style={{ background: C.panel, border: `1px solid ${on ? meta.color : C.line}`, borderLeft: `4px solid ${meta.color}`, padding: "8px 10px", cursor: "pointer" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                  <span style={{ fontSize: 15 }}>{c.flag}</span>
+                  <span style={{ fontSize: 8.5, color: meta.color, fontWeight: 700, letterSpacing: 0.5 }}>{meta.label}</span>
+                </div>
+                <div style={{ color: C.white, fontSize: 11.5, marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.name}</div>
+                <div style={{ color: C.muted, fontSize: 9, marginTop: 2 }}>{c.gdeltCount} Meldungen{c.reliefwebActive ? " · ReliefWeb aktiv" : ""}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {!geoBusy && geo && !sorted.length && <div style={{ color: C.muted, fontSize: 12, padding: 24, textAlign: "center", background: C.panel, border: `1px solid ${C.line}` }}>Keine Länderdaten verfügbar.</div>}
+
+      {selCountry && (
+        <Panel title={`${selCountry.flag} ${selCountry.name} · Details`} right={<span onClick={() => setGeoSel(null)} style={{ color: C.muted, fontSize: 11, cursor: "pointer" }}>× schließen</span>}>
+          {selCountry.level === "nicht geprüft" && <div style={{ color: C.muted, fontSize: 11, marginBottom: 8 }}>Für dieses Land konnte innerhalb des Zeitbudgets keine GDELT-Abfrage abgeschlossen werden — bitte "AKTUALISIEREN" erneut versuchen.</div>}
+          {selCountry.reliefwebActive && (
+            <div style={{ background: "#17140a", border: `1px solid ${C.amberDim}`, padding: "8px 10px", marginBottom: 10, fontSize: 11.5 }}>
+              <div style={{ color: C.amber, fontSize: 9.5, letterSpacing: 1, marginBottom: 3 }}>RELIEFWEB / UN OCHA{selCountry.reliefwebType ? " · " + selCountry.reliefwebType.toUpperCase() : ""}</div>
+              <div style={{ color: C.white }}>{selCountry.reliefwebHeadline}</div>
+              {selCountry.reliefwebDate && <div style={{ color: C.muted, fontSize: 9.5, marginTop: 3 }}>{selCountry.reliefwebDate}</div>}
+            </div>
+          )}
+          <div style={{ color: C.orange, fontSize: 9.5, letterSpacing: 1, marginBottom: 4 }}>GDELT · JÜNGSTE MELDUNGEN ({selCountry.gdeltCount} insgesamt gefunden)</div>
+          {selCountry.headlines?.length ? selCountry.headlines.map((h, i) => (
+            <div key={i} style={{ padding: "6px 0", borderBottom: i < selCountry.headlines.length - 1 ? `1px solid ${C.line}` : "none" }}>
+              <a href={h.url} target="_blank" rel="noreferrer" style={{ color: C.white, fontSize: 12, textDecoration: "none", lineHeight: 1.35 }}>{h.title}</a>
+              <div style={{ color: C.muted, fontSize: 9, marginTop: 2 }}>{h.source}{h.date ? " · " + h.date : ""}</div>
+            </div>
+          )) : <div style={{ color: C.muted, fontSize: 11 }}>Keine GDELT-Meldungen zu Konflikt-Schlagwörtern in den letzten 3 Tagen.</div>}
+        </Panel>
+      )}
+    </div>
+  );
+}
+
 /* ================= App ================= */
 function App() {
   const [booted, setBooted] = useState(false);
@@ -754,6 +899,20 @@ function App() {
   };
   useEffect(() => { if (connected && tab === "makro" && !Object.keys(macro).length) loadMacro(); }, [connected, tab]);
 
+  /* F6 WELTLAGE: Geopolitische Risikoübersicht (GDELT + ReliefWeb) */
+  const [geo, setGeo] = useState(null); const [geoBusy, setGeoBusy] = useState(false); const [geoErr, setGeoErr] = useState("");
+  const [geoSel, setGeoSel] = useState(null);
+  const loadGeo = async () => {
+    setGeoBusy(true); setGeoErr("");
+    try {
+      const out = await jget("/.netlify/functions/geopolitics");
+      if (!out || typeof out !== "object" || !out.countries) throw new Error("Leere/ungültige Antwort vom Server");
+      setGeo(out);
+    } catch (e) { setGeoErr((e && e.message) || "Unbekannter Fehler beim Laden"); }
+    setGeoBusy(false);
+  };
+  useEffect(() => { if (connected && tab === "geo" && !geo) loadGeo(); }, [connected, tab]);
+
   /* F5 RATIO: Kennzahlen / Zeitreihe / Peer-Vergleich (COMPS) */
   const [ratioTickers, setRatioTickers] = useState([]); // [{s,y}, ...] - 1 Ticker (single/series) oder mehrere (comps)
   const [ratioData, setRatioData] = useState({}); // keyOf -> getDetail()-Ergebnis (inkl. fundamentals/isFinancial)
@@ -860,7 +1019,7 @@ function App() {
         <span onClick={disconnect} style={{ color: C.muted, fontSize: 10, cursor: "pointer", border: `1px solid ${C.line}`, padding: "2px 6px" }}>LOGOUT</span>
       </div>
       <div style={{ background: "#000", borderBottom: `1px solid ${C.line}`, padding: "5px 12px", display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-        {Fkey("F1 MARKT", "markt", C.amber)}{Fkey("F2 SCANNER", "scanner", C.green)}{Fkey("F3 NEWS", "news", C.red)}{Fkey("F4 MAKRO", "makro", C.blue)}{Fkey("F5 RATIO", "ratio", "#c07af0")}
+        {Fkey("F1 MARKT", "markt", C.amber)}{Fkey("F2 SCANNER", "scanner", C.green)}{Fkey("F3 NEWS", "news", C.red)}{Fkey("F4 MAKRO", "makro", C.blue)}{Fkey("F5 RATIO", "ratio", "#c07af0")}{Fkey("F6 WELTLAGE", "geo", "#ff6b6b")}
         <span style={{ color: C.muted, fontSize: 9, marginLeft: 6 }}>EU:</span>
         {EU_PRESETS.slice(0, 8).map((p) => <button key={p.y} onClick={() => loadDetail(p)} title={p.label} style={{ background: "transparent", color: C.blue, border: `1px solid ${C.line}`, fontSize: 9, padding: "2px 6px", cursor: "pointer", fontFamily: mono }}>{p.s}</button>)}
         <span style={{ color: C.muted, fontSize: 9, marginLeft: 6 }}>ASIA:</span>
@@ -1042,6 +1201,8 @@ function App() {
           )}
         </div>
       )}
+
+      {tab === "geo" && <GeoPanel geo={geo} geoBusy={geoBusy} geoErr={geoErr} geoSel={geoSel} setGeoSel={setGeoSel} loadGeo={loadGeo} />}
     </div>
   );
 }
