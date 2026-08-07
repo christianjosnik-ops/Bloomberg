@@ -116,22 +116,35 @@ function shape(data, symbol) {
   out.volume = meta.regularMarketVolume != null ? +meta.regularMarketVolume : null;
 
   const baseSym = symbol.split(".")[0].toUpperCase();
+  // Kern-Woerter des Firmennamens fuer die Titel-Pruefung: Rechtsform-Suffixe und
+  // Fuellwoerter raus, sonst wuerde z.B. "AG" oder "Inc" praktisch jeden Treffer
+  // "relevant" machen. Nur Woerter >2 Zeichen zaehlen als brauchbares Signal.
+  const STOPWORDS = new Set(["inc", "incorporated", "corp", "corporation", "ltd", "limited", "plc", "se", "ag", "sa", "nv", "co", "company", "group", "holding", "holdings", "the", "and", "class"]);
+  const coreWords = (out.name || "").toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((w) => w.length > 2 && !STOPWORDS.has(w));
   const newsItems = (data.news && Array.isArray(data.news.news)) ? data.news.news : [];
-  out.news = newsItems
+  const scored = newsItems
     .filter((n) => n.title)
     .map((n) => {
       const related = Array.isArray(n.relatedTickers) ? n.relatedTickers.map((t) => t.toUpperCase()) : [];
+      const relatedMatch = related.includes(symbol.toUpperCase()) || related.includes(baseSym);
+      const titleLower = n.title.toLowerCase();
+      const nameMatch = coreWords.some((w) => titleLower.includes(w));
       return {
         headline: n.title, source: (n.publisher || "NEWS").toUpperCase().slice(0, 10),
         ago: n.providerPublishTime ? Math.max(1, Math.floor((Date.now() - n.providerPublishTime * 1000) / 6e4)) : 1,
         date: n.providerPublishTime ? new Date(n.providerPublishTime * 1000).toISOString().slice(0, 16).replace("T", " ") : "",
         summary: "", url: n.link, tags: [symbol],
-        _relevant: related.includes(symbol.toUpperCase()) || related.includes(baseSym) ? 1 : 0,
+        _relevant: relatedMatch || nameMatch,
       };
-    })
-    .sort((a, b) => b._relevant - a._relevant)
-    .slice(0, 10)
-    .map(({ _relevant, ...n }) => n);
+    });
+  // Echte Filterung, nicht nur Sortierung: Yahoos Suche ist eine allgemeine
+  // Volltextsuche, kein "News fuer dieses Wertpapier"-Endpunkt - ohne Filter
+  // landen thematisch lose passende Treffer im Ergebnis. Nur im Ausnahmefall,
+  // dass wirklich gar nichts als relevant erkannt wird, eine kleine, klar
+  // reduzierte Notfall-Auswahl zeigen statt komplett leer zu bleiben.
+  const relevant = scored.filter((n) => n._relevant);
+  const chosen = (relevant.length ? relevant : scored.slice(0, 3));
+  out.news = chosen.slice(0, 10).map(({ _relevant, ...n }) => n);
 
   const earnQs = data.earn && data.earn.quoteSummary && data.earn.quoteSummary.result && data.earn.quoteSummary.result[0];
   const yearly = (earnQs && earnQs.earnings && earnQs.earnings.financialsChart && earnQs.earnings.financialsChart.yearly) || [];
