@@ -140,11 +140,28 @@ const geoLevelMeta = (level) => GEO_LEVEL_META[level] || GEO_LEVEL_META["keine"]
 const ago = (m) => (m < 60 ? m + "m" : Math.floor(m / 60) + "h");
 const FH = "https://finnhub.io/api/v1", TD = "https://api.twelvedata.com";
 const jget = (u) => fetch(u).then((r) => r.json());
+// Wie jget, aber mit hartem Client-Timeout: ohne das kann eine haengende
+// Server-Antwort den "lädt…"-Zustand einer Ansicht auf ewig einfrieren, ohne
+// dass jemals ein Fehler sichtbar wird (der try/catch drumherum kommt nie
+// zum Zug, weil das fetch-Promise selbst nie fertig wird).
+async function jgetTimeout(u, ms) {
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), ms || 15000);
+  try {
+    const r = await fetch(u, { signal: ctrl.signal });
+    return await r.json();
+  } catch (e) {
+    if (ctrl.signal.aborted) throw new Error(`Zeitüberschreitung nach ${((ms || 15000) / 1000).toFixed(0)}s`);
+    throw e;
+  } finally {
+    clearTimeout(to);
+  }
+}
 const keyOf = (e) => e.y || e.s;
 const YF = "/.netlify/functions/quote";
 const FRED_FN = "/.netlify/functions/fred";
 async function fredGetBatch(ids) {
-  return jget(`${FRED_FN}?ids=${encodeURIComponent(ids.join(","))}`);
+  return jgetTimeout(`${FRED_FN}?ids=${encodeURIComponent(ids.join(","))}`, 15000);
 }
 
 /* ================= LocalStorage persistence (standalone file, no window.storage) ================= */
@@ -585,14 +602,17 @@ function GeoWorldMap({ geo, geoSel, setGeoSel }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 10000); // ohne Timeout haengt "Weltkarte lädt…" ewig, falls der CDN nicht antwortet
       try {
-        const res = await fetch("https://cdn.jsdelivr.net/gh/johan/world.geo.json@master/countries.geo.json");
+        const res = await fetch("https://cdn.jsdelivr.net/gh/johan/world.geo.json@master/countries.geo.json", { signal: ctrl.signal });
         if (!res.ok) throw new Error("HTTP " + res.status);
         const gj = await res.json();
         const features = gj && Array.isArray(gj.features) ? gj.features : null;
         if (!features || !features.length) throw new Error("keine Features in der Antwort");
         if (!cancelled) setWorld(features);
       } catch (e) { if (!cancelled) setWorld(false); }
+      finally { clearTimeout(to); }
     })();
     return () => { cancelled = true; };
   }, []);
@@ -905,7 +925,7 @@ function App() {
   const loadGeo = async () => {
     setGeoBusy(true); setGeoErr("");
     try {
-      const out = await jget("/.netlify/functions/geopolitics");
+      const out = await jgetTimeout("/.netlify/functions/geopolitics", 15000);
       if (!out || typeof out !== "object" || !out.countries) throw new Error("Leere/ungültige Antwort vom Server");
       setGeo(out);
     } catch (e) { setGeoErr((e && e.message) || "Unbekannter Fehler beim Laden"); }
