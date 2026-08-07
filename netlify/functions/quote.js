@@ -2,6 +2,8 @@
 // Yahoo-Finance-Proxy: Chart + quoteSummary (Kennzahlen, Analysten-Empfehlungen,
 // Firmenprofil) WELTWEIT. Mit Cache(90s), Crumb+Cookie, Retry, UA-Rotation.
 
+const { normalizeStatements, isFinancialCompany } = require("./lib/normalizer");
+
 const UAS = [
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121 Safari/537.36",
@@ -73,7 +75,12 @@ async function fetchAll(symbol, range) {
       const news = await yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(newsQuery)}&newsCount=12&quotesCount=0${q}`, ua, sess).catch(() => null);
       // Mehrjaehrige Umsatz/Gewinn-Historie separat, unabhaengig vom Erfolg der Kernkennzahlen
       const earn = await fetchSum(symbol, ua, sess, "earnings").catch(() => null);
-      return { chart, sum, cal, news, earn };
+      // Jahresabschluesse (Bilanz/GuV/Kapitalflussrechnung) fuer das Kennzahlen-Modul (F5 RATIO).
+      // UNGETESTET gegen die echte Yahoo-API (kein Netzwerkzugriff in dieser Umgebung) - separater,
+      // unabhaengiger Fetch, damit ein Fehlschlag hier nichts anderes blockiert. TODO nach erstem
+      // Live-Deploy: pruefen, ob Yahoo diese drei Module noch zuverlaessig liefert.
+      const fund = await fetchSum(symbol, ua, sess, "balanceSheetHistory,incomeStatementHistory,cashflowStatementHistory").catch(() => null);
+      return { chart, sum, cal, news, earn, fund };
     }
     last = "429/blockiert";
     if (attempt < 3) await sleep(500 + attempt * 700);
@@ -102,8 +109,8 @@ function shape(data, symbol) {
     open: meta.regularMarketOpen != null ? +(+meta.regularMarketOpen).toFixed(2) : null,
     high: meta.regularMarketDayHigh != null ? +(+meta.regularMarketDayHigh).toFixed(2) : null,
     low: meta.regularMarketDayLow != null ? +(+meta.regularMarketDayLow).toFixed(2) : null,
-    series, mktcap: null, pe: null, eps: null, divYield: null, target: null, description: "", sector: "", recos: [],
-    week52Low: null, week52High: null, volume: null, avgVolume: null, beta: null, earningsDate: null, news: [], financials: [],
+    series, mktcap: null, pe: null, eps: null, divYield: null, target: null, description: "", sector: "", industry: "", recos: [],
+    week52Low: null, week52High: null, volume: null, avgVolume: null, beta: null, earningsDate: null, news: [], financials: [], fundamentals: [], isFinancial: false,
   };
   out.volume = meta.regularMarketVolume != null ? +meta.regularMarketVolume : null;
 
@@ -129,6 +136,17 @@ function shape(data, symbol) {
   const yearly = (earnQs && earnQs.earnings && earnQs.earnings.financialsChart && earnQs.earnings.financialsChart.yearly) || [];
   out.financials = yearly.map((y) => ({ year: y.date, revenue: num(y.revenue), earnings: num(y.earnings) })).filter((y) => y.year != null);
 
+  // F5 RATIO: normalisierte Jahresabschluesse fuers Kennzahlen-Modul (ausschliesslich GJ-Basis,
+  // keine TTM-Werte gemischt - siehe normalizer.js). Fehlschlag hier lässt fundamentals einfach leer.
+  const fundQs = data.fund && data.fund.quoteSummary && data.fund.quoteSummary.result && data.fund.quoteSummary.result[0];
+  if (fundQs) {
+    out.fundamentals = normalizeStatements({
+      balanceSheet: (fundQs.balanceSheetHistory && fundQs.balanceSheetHistory.balanceSheetStatements) || [],
+      incomeStatement: (fundQs.incomeStatementHistory && fundQs.incomeStatementHistory.incomeStatementHistory) || [],
+      cashflow: (fundQs.cashflowStatementHistory && fundQs.cashflowStatementHistory.cashflowStatements) || [],
+    });
+  }
+
   const qs = data.sum && data.sum.quoteSummary && data.sum.quoteSummary.result && data.sum.quoteSummary.result[0];
   const calQs = data.cal && data.cal.quoteSummary && data.cal.quoteSummary.result && data.cal.quoteSummary.result[0];
   if (qs) {
@@ -142,7 +160,8 @@ function shape(data, symbol) {
     const dy = num(sd.dividendYield); if (dy != null) out.divYield = +(dy * 100).toFixed(2);
     out.target = num(fd.targetMeanPrice); if (out.target != null) out.target = +out.target.toFixed(2);
     out.description = (ap.longBusinessSummary || "").slice(0, 600);
-    out.sector = ap.sector || "";
+    out.sector = ap.sector || ""; out.industry = ap.industry || "";
+    out.isFinancial = isFinancialCompany(ap.sector, ap.industry);
     out.week52Low = num(sd.fiftyTwoWeekLow); if (out.week52Low != null) out.week52Low = +out.week52Low.toFixed(2);
     out.week52High = num(sd.fiftyTwoWeekHigh); if (out.week52High != null) out.week52High = +out.week52High.toFixed(2);
     out.avgVolume = num(sd.averageVolume) != null ? Math.round(num(sd.averageVolume)) : null;
