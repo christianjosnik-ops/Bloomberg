@@ -739,6 +739,56 @@ function RatioPanel({ ratioTickers, ratioData, ratioView, ratioBusy, ratioAddCmd
   </>);
 }
 
+/* ================= Diagnose-Panel =================
+   Zeigt je Datenquelle Statuscode, Dauer und einen Auszug der Antwort. Bewusst
+   ausfuehrlich und kopierbar: Ein Screenshot davon reicht, um einen Ausfall
+   einzuordnen, ohne dass jemand Entwicklerwerkzeuge oeffnen muss. */
+function DiagPanel({ diag, diagBusy, diagErr, runDiag }) {
+  return (
+    <Panel
+      title="◆ DIAGNOSE DER DATENQUELLEN"
+      right={<button className="btn btn--ghost" onClick={runDiag} disabled={diagBusy}>{diagBusy ? "prüfe…" : "▶ PRÜFEN"}</button>}
+      style={{ marginBottom: 8 }}
+    >
+      {!diag && !diagBusy && !diagErr && (
+        <div className="muted">Fragt jede Quelle (FRED, DBnomics, ReliefWeb, GDELT, Yahoo, Stooq, Frankfurter) einzeln ab und zeigt den echten Statuscode samt Antworttext. Dauert bis zu 30 Sekunden.</div>
+      )}
+      {diagBusy && <div className="muted">Prüfe alle Quellen nacheinander… das dauert bis zu 30 Sekunden.</div>}
+      {diagErr && <div className="note note--err">{diagErr}</div>}
+      {diag && (<>
+        <div className="muted" style={{ marginBottom: 8 }}>
+          Node {diag.laufzeitumgebung?.node} · Stand {diag.zeitpunkt ? new Date(diag.zeitpunkt).toLocaleString("de-DE") : "—"}
+          {" · "}<span style={{ color: C.green }}>{diag.zusammenfassung?.ok?.length || 0} OK</span>
+          {" · "}<span style={{ color: C.red }}>{diag.zusammenfassung?.fehlgeschlagen?.length || 0} fehlgeschlagen</span>
+        </div>
+        {diag.proben.map((p) => {
+          const good = p.ok === true && !p.warning;
+          const col = p.skipped ? C.muted : good ? C.green : C.red;
+          return (
+            <div key={p.key} style={{ borderLeft: `3px solid ${col}`, background: C.panel2, padding: "7px 10px", marginBottom: 6 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ color: C.white, fontSize: "var(--fs-sm)" }}>{p.label}</span>
+                <span style={{ color: col, fontSize: "var(--fs-xs)", whiteSpace: "nowrap" }}>
+                  {p.skipped ? "übersprungen" : (p.status != null ? "HTTP " + p.status : "kein Kontakt")}{p.ms != null ? ` · ${p.ms}ms` : ""}
+                </span>
+              </div>
+              {p.error && <div style={{ color: C.red, fontSize: "var(--fs-xs)", marginTop: 3 }}>{p.error}{p.errorCause ? ` (${p.errorCause})` : ""}</div>}
+              {p.warning && <div style={{ color: C.amber, fontSize: "var(--fs-xs)", marginTop: 3 }}>⚠ {p.warning}</div>}
+              {p.jsonParseError && <div style={{ color: C.amber, fontSize: "var(--fs-xs)", marginTop: 3 }}>⚠ Antwort ist kein gültiges JSON: {p.jsonParseError}</div>}
+              {p.jsonTopLevelKeys && <div className="muted" style={{ marginTop: 3 }}>JSON-Schlüssel: {Array.isArray(p.jsonTopLevelKeys) ? p.jsonTopLevelKeys.join(", ") : String(p.jsonTopLevelKeys)}</div>}
+              {p.bodySnippet && (
+                <div className="muted" style={{ marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: 90, overflowY: "auto", fontSize: "var(--fs-2xs)" }}>
+                  {p.bodySnippet}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </>)}
+    </Panel>
+  );
+}
+
 /* ================= F6 WELTLAGE ================= */
 // Echte Weltkarte als Erweiterung: laedt oeffentliche Laendergrenzen (GeoJSON)
 // zur Laufzeit im Browser per CDN, genau wie React/Babel schon per <script src>
@@ -807,7 +857,7 @@ function GeoWorldMap({ geo, geoSel, setGeoSel }) {
   );
 }
 
-function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo }) {
+function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diagBusy, diagErr, runDiag }) {
   const countries = geo ? Object.values(geo.countries) : [];
   const sorted = countries.slice().sort((a, b) => {
     const d = geoLevelMeta(b.level).order - geoLevelMeta(a.level).order;
@@ -831,6 +881,12 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo }) {
 
       {geoErr && <div className="note note--err" style={{ marginBottom: 8 }}>Fehler beim Laden: {geoErr}</div>}
       {geoBusy && !geo && <div className="muted" style={{ padding: 12 }}>lädt…</div>}
+
+      {/* Nur bei tatsaechlichem Problem einblenden - genau dann ist die Frage
+          "warum kommt hier nichts an?" offen, und genau die beantwortet das Panel. */}
+      {(geoErr || geo?.reliefwebError) && (
+        <DiagPanel diag={diag} diagBusy={diagBusy} diagErr={diagErr} runDiag={runDiag} />
+      )}
 
       {sorted.length > 0 && <GeoWorldMap geo={geo} geoSel={geoSel} setGeoSel={setGeoSel} />}
 
@@ -1108,6 +1164,23 @@ function App() {
     setGeoBusy(false);
   };
   useEffect(() => { if (connected && tab === "geo" && !geo) loadGeo(); }, [connected, tab]);
+
+  /* Diagnose: fragt jede externe Datenquelle einzeln ab und zeigt, was wirklich
+     zurueckkommt. Hintergrund: In der Entwicklungsumgebung sind fred.stlouisfed.org,
+     api.reliefweb.int und api.db.nomics.world per Egress-Richtlinie gesperrt -
+     Fehler wie "ReliefWeb nicht erreichbar" lassen sich dort nicht nachstellen.
+     Auf Netlify laeuft der Aufruf dagegen echt, und dieses Panel macht den
+     konkreten Grund (Statuscode + Antworttext) sichtbar. */
+  const [diag, setDiag] = useState(null); const [diagBusy, setDiagBusy] = useState(false); const [diagErr, setDiagErr] = useState("");
+  const runDiag = async () => {
+    setDiagBusy(true); setDiagErr(""); setDiag(null);
+    try {
+      const out = await jgetTimeout("/.netlify/functions/diag", 30000);
+      if (!out || !Array.isArray(out.proben)) throw new Error("Unerwartete Antwort vom Diagnose-Endpunkt");
+      setDiag(out);
+    } catch (e) { setDiagErr((e && e.message) || "Diagnose fehlgeschlagen"); }
+    setDiagBusy(false);
+  };
 
   /* F5 RATIO: Kennzahlen / Zeitreihe / Peer-Vergleich (COMPS) */
   const [ratioTickers, setRatioTickers] = useState([]); // [{s,y}, ...] - 1 Ticker (single/series) oder mehrere (comps)
@@ -1413,6 +1486,11 @@ function App() {
             <button className="btn btn--ghost" onClick={loadMacro} disabled={macroBusy}>{macroBusy ? "…" : "↻ AKTUALISIEREN"}</button>
           </div>
           {macroErr && <div className="note note--err" style={{ marginBottom: 8 }}>Fehler beim Laden der Makrodaten: {macroErr}</div>}
+          {/* Diagnose nur einblenden, wenn es tatsaechlich klemmt - im Normalbetrieb
+              soll das Panel den Blick auf die Daten nicht verstellen. */}
+          {(macroErr || Object.values(macro).some((m) => m && m.error)) && (
+            <DiagPanel diag={diag} diagBusy={diagBusy} diagErr={diagErr} runDiag={runDiag} />
+          )}
           <div className="grid-auto">
             {MACRO_PRESETS.map((m) => {
               const d = macro[m.id]; const dUp = (d?.chg ?? 0) >= 0;
@@ -1456,7 +1534,8 @@ function App() {
         </div>
       )}
 
-      {tab === "geo" && <GeoPanel geo={geo} geoBusy={geoBusy} geoErr={geoErr} geoSel={geoSel} setGeoSel={setGeoSel} loadGeo={loadGeo} />}
+      {tab === "geo" && <GeoPanel geo={geo} geoBusy={geoBusy} geoErr={geoErr} geoSel={geoSel} setGeoSel={setGeoSel} loadGeo={loadGeo}
+        diag={diag} diagBusy={diagBusy} diagErr={diagErr} runDiag={runDiag} />}
     </div>
   );
 }

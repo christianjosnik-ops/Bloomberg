@@ -38,7 +38,16 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 // --- ReliefWeb: aktuelle Krisen je Land (ein Aufruf, appname statt Key) -----
 async function fetchReliefWebOnce(url) {
   const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } }, RELIEFWEB_TIMEOUT);
-  if (!res.ok) { const err = new Error(`ReliefWeb HTTP ${res.status}`); err.status = res.status; throw err; }
+  if (!res.ok) {
+    // Den Antwortkoerper mitnehmen: ReliefWeb schickt bei 4xx eine konkrete
+    // Begruendung ("Invalid value ... for filter[value]" o.ae.). Ohne die stand
+    // im UI nur "ReliefWeb HTTP 400" - was nicht sagt, WAS falsch ist.
+    let detail = "";
+    try { detail = (await res.text()).slice(0, 200).replace(/\s+/g, " ").trim(); } catch (_) {}
+    const err = new Error(`ReliefWeb HTTP ${res.status}${detail ? " – " + detail : ""}`);
+    err.status = res.status;
+    throw err;
+  }
   const json = await res.json();
   return Array.isArray(json && json.data) ? json.data : [];
 }
@@ -69,23 +78,30 @@ const RELIEFWEB_BASE = "https://api.reliefweb.int/v1/disasters"
   + "?appname=terminal-app-geopolitics"
   + "&fields[include][]=name&fields[include][]=date.created&fields[include][]=type.name&fields[include][]=country.iso3&fields[include][]=country.iso2&fields[include][]=country.name"
   + "&sort[]=date.created:desc&limit=100";
-const RELIEFWEB_FILTERED = RELIEFWEB_BASE + "&filter[field]=status&filter[value][]=alert&filter[value][]=current";
+// Statuswerte des disasters-Endpunkts sind "alert", "ongoing" und "past".
+// Bisher stand hier "current" - ein Wert, den diese Taxonomie nicht kennt und
+// der die Abfrage vermutlich mit HTTP 400 hat scheitern lassen (was im UI als
+// "ReliefWeb nicht erreichbar" ankam). Die Rueckfallkette unten faengt einen
+// solchen Fehler jetzt zusaetzlich ab, egal welcher Wert kuenftig falsch ist.
+const RELIEFWEB_FILTERED = RELIEFWEB_BASE + "&filter[field]=status&filter[value][]=alert&filter[value][]=ongoing";
 
 async function fetchReliefWeb() {
-  try {
-    return parseReliefWebItems(await fetchReliefWebOnce(RELIEFWEB_FILTERED));
-  } catch (e) {
-    // Die genauen gueltigen Werte fuer filter[value] bei "status" liessen sich ohne
-    // Netzwerkzugriff in der Entwicklungsumgebung nicht zweifelsfrei verifizieren.
-    // Bei einer klassischen "falsche Anfrage"-Antwort (4xx) auf die ungefilterte,
-    // nach Datum sortierte Abfrage zurueckfallen statt komplett zu scheitern - das
-    // liefert dann zwar auch aeltere/abgeschlossene Krisen mit, ist aber immer noch
-    // besser als "ReliefWeb nie erreichbar" wegen eines einzelnen falschen Filterworts.
-    if (e && e.status >= 400 && e.status < 500) {
-      return parseReliefWebItems(await fetchReliefWebOnce(RELIEFWEB_BASE));
+  const attempts = [];
+  // Reihenfolge: praezise gefiltert -> ungefiltert. Die ungefilterte Abfrage
+  // liefert auch abgeschlossene Krisen mit, ist also schlechter - aber deutlich
+  // besser als gar keine ReliefWeb-Daten, nur weil ein Filterwort nicht passt.
+  for (const url of [RELIEFWEB_FILTERED, RELIEFWEB_BASE]) {
+    try {
+      return parseReliefWebItems(await fetchReliefWebOnce(url));
+    } catch (e) {
+      attempts.push(String((e && e.message) || e));
+      // Nur bei "falsche Anfrage" lohnt der naechste Versuch. Timeouts oder
+      // 5xx wuerden nur ein weiteres Zeitbudget verbrennen.
+      const retryable = e && e.status >= 400 && e.status < 500;
+      if (!retryable) break;
     }
-    throw e;
   }
+  throw new Error(attempts.join(" | "));
 }
 
 // --- GDELT: Nachrichtenvolumen zu Konflikt-Schlagwoertern je Land ----------

@@ -29,7 +29,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(shaped.latest, 4.2);
     assert.strictEqual(shaped.chg, 0.2);
     assert.strictEqual(shaped.latestDate, "2026-06-01");
-    console.log("Block 1/6 (fromFredCsv: CSV korrekt geparst): OK");
+    console.log("Block 1/9 (fromFredCsv: CSV korrekt geparst): OK");
   }
 
   // --- fromDbnomics: erster Kandidat 404, dritter (Query-Form) liefert das Ergebnis ---
@@ -51,7 +51,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(calls, 3, "muss alle drei Kandidaten-Formen durchprobieren, wenn die ersten beiden 404 liefern");
     assert.ok(shaped, "die dritte Kandidatenform muss ein verwertbares Ergebnis liefern");
     assert.strictEqual(shaped.latest, 4.2);
-    console.log("Block 2/6 (fromDbnomics: Fallback ueber alle Kandidaten-URLs): OK");
+    console.log("Block 2/9 (fromDbnomics: Fallback ueber alle Kandidaten-URLs): OK");
   }
 
   // --- fetchOne: Zeitbudget schon vor dem Aufruf erschoepft -> kein Netzwerkzugriff ---
@@ -64,7 +64,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const result = await fetchOne("UNRATE", null, deadline);
     assert.ok(result.error, "muss einen Fehler statt Daten liefern");
     assert.ok(!fetchCalled, "darf bei bereits abgelaufenem Budget gar nicht erst netzwerken");
-    console.log("Block 3/6 (fetchOne: erschoepftes Budget -> kein Netzwerkzugriff): OK");
+    console.log("Block 3/9 (fetchOne: erschoepftes Budget -> kein Netzwerkzugriff): OK");
   }
 
   // --- fetchOne: Provider-Timeouts werden auf die RESTZEIT gekappt, nicht die vollen Standardwerte ---
@@ -81,7 +81,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     console.log("  Dauer bei haengenden Providern und 0.9s Restbudget:", (dt / 1000).toFixed(2) + "s");
     assert.ok(dt < 1400, "Provider-Timeouts muessen auf die Restzeit gekappt werden, nicht auf die vollen 3s/2.5s-Standardwerte laufen");
     assert.ok(result.error, "muss trotzdem einen Fehler statt eines Haengers liefern");
-    console.log("Block 4/6 (fetchOne: Provider-Timeouts an Restbudget gekappt): OK");
+    console.log("Block 4/9 (fetchOne: Provider-Timeouts an Restbudget gekappt): OK");
   }
 
   // --- Handler: mehrere Serien/Wellen, alle Provider haengen -> Gesamtlaufzeit bleibt unter Netlifys Limit ---
@@ -100,7 +100,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const body = JSON.parse(res.body);
     const errors = Object.values(body).map((v) => v && v.error).filter(Boolean);
     assert.strictEqual(errors.length, 10, "alle 10 Serien muessen einen Fehler statt haengender Requests liefern");
-    console.log("Block 5/6 (Handler: Zeitbudget schuetzt ueber alle Wellen hinweg): OK");
+    console.log("Block 5/9 (Handler: Zeitbudget schuetzt ueber alle Wellen hinweg): OK");
   }
 
   // --- Handler: Batch-Cache-Treffer braucht kein Netzwerk ---
@@ -115,7 +115,48 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const second = await fred.handler({ httpMethod: "GET", queryStringParameters: { ids: "UNRATE" } });
     assert.strictEqual(calls, callsAfterFirst, "zweiter Aufruf innerhalb der TTL darf nicht erneut netzwerken");
     assert.strictEqual(JSON.parse(second.body).UNRATE.latest, 4.2);
-    console.log("Block 6/6 (Handler: Cache verhindert erneuten Netzwerkzugriff): OK");
+    console.log("Block 6/9 (Handler: Cache verhindert erneuten Netzwerkzugriff): OK");
+  }
+
+  // --- FRED antwortet mit HTML MIT Status 200 (Bot-Sperre) -> muss als solche benannt werden ---
+  {
+    providers._resetBreakers();
+    global.fetch = async () => ({
+      ok: true, status: 200,
+      text: async () => "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>Checking your browser</body></html>",
+    });
+    const { fromFredCsv } = freshHandler()._internal;
+    let msg = null;
+    try { await fromFredCsv("UNRATE", 10, 3000); } catch (e) { msg = e.message; }
+    assert.ok(msg && /HTML statt CSV/.test(msg), "eine Sperrseite mit Status 200 darf nicht als 'leeres Ergebnis' durchrutschen, sondern muss benannt werden");
+    assert.ok(/Just a moment/.test(msg), "der Auszug der Sperrseite gehoert in die Meldung");
+    console.log("Block 7/9 (FRED: HTML-Sperrseite trotz Status 200 wird erkannt): OK");
+  }
+
+  // --- FRED 4xx: der Antwortkoerper ist die eigentliche Begruendung ---
+  {
+    providers._resetBreakers();
+    global.fetch = async () => ({ ok: false, status: 403, text: async () => "Access denied for automated clients" });
+    const { fromFredCsv } = freshHandler()._internal;
+    let msg = null;
+    try { await fromFredCsv("UNRATE", 10, 3000); } catch (e) { msg = e.message; }
+    assert.ok(/403/.test(msg) && /Access denied/.test(msg), "Status UND Begruendung muessen in der Meldung stehen");
+    console.log("Block 8/9 (FRED: Fehlertext des Servers bleibt erhalten): OK");
+  }
+
+  // --- CSV mit \r\n und fehlenden Werten (".") wird korrekt geparst ---
+  {
+    providers._resetBreakers();
+    global.fetch = async () => ({
+      ok: true, status: 200,
+      text: async () => "DATE,UNRATE\r\n2026-04-01,.\r\n2026-05-01,4.0\r\n2026-06-01,4.2\r\n",
+    });
+    const { fromFredCsv } = freshHandler()._internal;
+    const shaped = await fromFredCsv("UNRATE", 10, 3000);
+    assert.strictEqual(shaped.series.length, 2, "die Zeile mit fehlendem Wert (.) muss uebersprungen werden");
+    assert.strictEqual(shaped.latest, 4.2, "Windows-Zeilenenden duerfen den letzten Wert nicht verfaelschen");
+    assert.strictEqual(shaped.chg, 0.2);
+    console.log("Block 9/9 (FRED: CRLF-Zeilenenden und fehlende Werte): OK");
   }
 
   console.log("\nAlle fred.js-Tests erfolgreich.");
