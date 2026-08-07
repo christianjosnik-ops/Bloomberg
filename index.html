@@ -34,135 +34,28 @@
 <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js"></script>
 
-<!-- Reine Rechenlogik fuers F5-RATIO-Modul: eigenstaendige, nicht transpilierte
-     Dateien (kein Babel), Dual-Export fuer Wiederverwendung in Node-Tests und
-     spaeter im Zinssensitivitaets-Modul. Siehe ratios.js/peers.js. -->
+<!-- Reine Rechenlogik: eigenstaendige, nicht transpilierte Dateien (kein Babel),
+     Dual-Export fuer Wiederverwendung in Node-Tests. Siehe ratios.js/peers.js. -->
 <script src="ratios.js"></script>
 <script src="peers.js"></script>
+<script src="theme.js"></script>
+<script src="indicators.js"></script>
+<script src="market-data.js"></script>
 
 <!-- App-Quelltext (wird unten kontrolliert kompiliert) -->
 <script type="text/plain" id="app-src">
 const { useState, useMemo, useRef, useEffect } = React;
 
-/* ================= Theme ================= */
-const C = {
-  bg: "#000", panel: "#0a0b0c", panel2: "#050506", line: "#2a2b2e",
-  orange: "#ff8a1e", amber: "#ffb000", amberDim: "#8a5e15",
-  green: "#3fd07a", red: "#ff4d4d", blue: "#4ea3ff", white: "#e6e7ea", text: "#c9cbd0", muted: "#7f858f",
-};
-const mono = "ui-monospace, 'SF Mono', 'DejaVu Sans Mono', Menlo, monospace";
-const inp = { background: C.panel2, border: `1px solid ${C.line}`, color: C.amber, padding: "6px 8px", fontFamily: mono, fontSize: 12, outline: "none" };
-
-const CUR = { USD: "$", EUR: "€", GBP: "£", CHF: "Fr", JPY: "¥", HKD: "HK$", KRW: "₩", "": "" };
-// Weltweite Presets. `y` = Yahoo-Ticker (läuft über die Netlify-Funktion, weltweit).
-// Ohne `y` = reiner US-Wert über Finnhub (mit Analysten-Empfehlungen + News).
-const EU_PRESETS = [
-  { s: "RHM", y: "RHM.DE", label: "Rheinmetall" }, { s: "SAP", y: "SAP.DE", label: "SAP" },
-  { s: "PUM", y: "PUM.DE", label: "Puma" }, { s: "VOW3", y: "VOW3.DE", label: "Volkswagen" },
-  { s: "BMW", y: "BMW.DE", label: "BMW" }, { s: "MBG", y: "MBG.DE", label: "Mercedes" },
-  { s: "AIR", y: "AIR.PA", label: "Airbus" }, { s: "MC", y: "MC.PA", label: "LVMH" },
-  { s: "ASML", y: "ASML.AS", label: "ASML" }, { s: "NESN", y: "NESN.SW", label: "Nestlé" },
-];
-const ASIA_PRESETS = [
-  { s: "TOYOTA", y: "7203.T", label: "Toyota" }, { s: "SONY", y: "6758.T", label: "Sony" },
-  { s: "SAMSUNG", y: "005930.KS", label: "Samsung" }, { s: "TENCENT", y: "0700.HK", label: "Tencent" },
-  { s: "ALIBABA", y: "9988.HK", label: "Alibaba HK" }, { s: "TSMC-TW", y: "2330.TW", label: "TSMC Taiwan" },
-];
-const MACRO_PRESETS = [
-  { id: "UNRATE", label: "Arbeitslosenquote", unit: "%" },
-  { id: "CPIAUCSL", label: "Verbraucherpreise (CPI)", unit: "Index" },
-  { id: "FEDFUNDS", label: "Fed Funds Rate", unit: "%" },
-  { id: "DGS10", label: "US-Staatsanleihen 10J", unit: "%" },
-  { id: "T10Y2Y", label: "Zinskurve 10J–2J", unit: "%" },
-  { id: "GDP", label: "BIP (nominal)", unit: "Mrd $" },
-  { id: "PAYEMS", label: "Beschäftigte (Nonfarm)", unit: "Tsd" },
-  { id: "UMCSENT", label: "Verbrauchervertrauen", unit: "Index" },
-  { id: "MORTGAGE30US", label: "Hypothekenzins 30J", unit: "%" },
-  { id: "M2SL", label: "Geldmenge M2", unit: "Mrd $" },
-];
-const INDEX_PRESETS = [
-  { s: "SPX", y: "^GSPC", label: "S&P 500" }, { s: "NDX", y: "^IXIC", label: "Nasdaq" },
-  { s: "DJI", y: "^DJI", label: "Dow Jones" }, { s: "VIX", y: "^VIX", label: "VIX" },
-  { s: "GOLD", y: "GC=F", label: "Gold" }, { s: "OIL", y: "CL=F", label: "Öl (WTI)" },
-  { s: "EURUSD", y: "EURUSD=X", label: "EUR/USD" }, { s: "UST10Y", y: "^TNX", label: "US 10J-Rendite" },
-];
-const US_UNIVERSE = [
-  ["AAPL", "Apple Inc", "Technology"], ["MSFT", "Microsoft", "Technology"], ["NVDA", "NVIDIA", "Technology"], ["GOOGL", "Alphabet", "Technology"],
-  ["META", "Meta Platforms", "Technology"], ["AMD", "Adv Micro Dev", "Technology"], ["AVGO", "Broadcom", "Technology"], ["TSM", "TSMC", "Technology"],
-  ["QCOM", "Qualcomm", "Technology"], ["ORCL", "Oracle", "Technology"], ["TSLA", "Tesla", "Automotive"], ["F", "Ford Motor", "Automotive"],
-  ["GM", "General Motors", "Automotive"], ["AMZN", "Amazon", "Consumer"], ["NKE", "Nike", "Consumer"], ["MCD", "McDonald's", "Consumer"],
-  ["KO", "Coca-Cola", "Consumer"], ["JPM", "JPMorgan", "Financials"], ["V", "Visa", "Financials"], ["MA", "Mastercard", "Financials"],
-  ["GS", "Goldman Sachs", "Financials"], ["JNJ", "Johnson&Johnson", "Healthcare"], ["PFE", "Pfizer", "Healthcare"], ["LLY", "Eli Lilly", "Healthcare"],
-  ["UNH", "UnitedHealth", "Healthcare"], ["XOM", "Exxon Mobil", "Energy"], ["CVX", "Chevron", "Energy"], ["CAT", "Caterpillar", "Industrials"],
-  ["BA", "Boeing", "Industrials"], ["GE", "GE Aerospace", "Industrials"],
-];
-const US_NAME = Object.fromEntries(US_UNIVERSE.map(([s, n, sec]) => [s, [n, sec]]));
-const SECTORS = ["Alle", ...Array.from(new Set(US_UNIVERSE.map((u) => u[2])))];
-const fmtCap = (b) => (b == null ? "—" : b >= 1000 ? (b / 1000).toFixed(2) + "T" : b.toFixed(1) + "B");
-const fmtVol = (v) => (v == null ? "—" : v >= 1e9 ? (v / 1e9).toFixed(2) + "B" : v >= 1e6 ? (v / 1e6).toFixed(1) + "M" : v >= 1e3 ? (v / 1e3).toFixed(0) + "K" : String(v));
-
-/* ================= F5 RATIO: Formatierung + Metrik-Metadaten (UI-Schicht, importiert nur aus Ratios/Peers) ================= */
-const fmtMoney = (v) => { if (v == null) return "n/a"; const sign = v < 0 ? "-" : ""; const av = Math.abs(v);
-  return sign + (av >= 1e9 ? (av / 1e9).toFixed(2) + "B" : av >= 1e6 ? (av / 1e6).toFixed(1) + "M" : av >= 1e3 ? (av / 1e3).toFixed(0) + "K" : av.toFixed(0)); };
-const fmtRatio = (v, kind) => { if (v == null) return "n/a";
-  if (kind === "pct") return (v * 100).toFixed(1) + "%"; if (kind === "days") return v.toFixed(0) + "T";
-  if (kind === "money") return fmtMoney(v); return v.toFixed(2) + "x"; };
-const pctColor = (p) => { if (p == null) return "transparent"; const t = Math.max(0, Math.min(100, p)) / 100;
-  return t >= 0.5 ? `rgba(63,208,122,${0.1 + (t - 0.5) * 0.9})` : `rgba(255,77,77,${0.1 + (0.5 - t) * 0.9})`; };
-// Nicht in DIRECTIONS (peers.js), sondern hier: Anzeige-Metadaten. Reihenfolge = Gruppen-Reihenfolge in der UI.
-const METRIC_META = {
-  grossMargin: { label: "Brutto-Marge", group: "Marge", fmt: "pct" }, ebitdaMargin: { label: "EBITDA-Marge", group: "Marge", fmt: "pct" },
-  ebitMargin: { label: "EBIT-Marge", group: "Marge", fmt: "pct" }, netMargin: { label: "Netto-Marge", group: "Marge", fmt: "pct" },
-  fcfMargin: { label: "FCF-Marge", group: "Marge", fmt: "pct" },
-  currentRatio: { label: "Current Ratio", group: "Liquidität", fmt: "x" }, quickRatio: { label: "Quick Ratio", group: "Liquidität", fmt: "x" },
-  cashRatio: { label: "Cash Ratio", group: "Liquidität", fmt: "x" },
-  netDebt: { label: "Net Debt", group: "Verschuldung", fmt: "money" }, netDebtToEbitda: { label: "Net Debt/EBITDA", group: "Verschuldung", fmt: "x" },
-  interestCoverage: { label: "Zinsdeckung", group: "Verschuldung", fmt: "x" }, debtToEquity: { label: "Debt/Equity", group: "Verschuldung", fmt: "x" },
-  equityRatio: { label: "EK-Quote", group: "Verschuldung", fmt: "pct" },
-  dso: { label: "DSO", group: "Working Capital", fmt: "days" }, dio: { label: "DIO", group: "Working Capital", fmt: "days" },
-  dpo: { label: "DPO", group: "Working Capital", fmt: "days" }, ccc: { label: "Cash Conversion Cycle", group: "Working Capital", fmt: "days" },
-  roe: { label: "ROE", group: "Rendite", fmt: "pct" }, roa: { label: "ROA", group: "Rendite", fmt: "pct" }, roic: { label: "ROIC", group: "Rendite", fmt: "pct" },
-};
-// Working-Capital-/Verschuldungskennzahlen ergeben fuer Banken/Versicherer kein sinnvolles Bild
-// (siehe Edge-Case-Vorgabe) - werden fuer diese Gruppen ausgeblendet statt Unsinn anzuzeigen.
-const RATIO_SUPPRESS_FOR_FINANCIALS = ["currentRatio", "quickRatio", "cashRatio", "netDebt", "netDebtToEbitda", "interestCoverage", "debtToEquity", "equityRatio", "dso", "dio", "dpo", "ccc"];
-
-/* ================= F6 WELTLAGE: Metadaten ================= */
-const GEO_LEVEL_META = {
-  "kritisch": { color: "#ff4d4d", order: 4, label: "KRITISCH" },
-  "hoch": { color: "#ff7a45", order: 3, label: "HOCH" },
-  "mittel": { color: "#ffb000", order: 2, label: "MITTEL" },
-  "niedrig": { color: "#d9c05a", order: 1, label: "NIEDRIG" },
-  "keine": { color: "#7f858f", order: 0, label: "KEINE" },
-  "nicht geprüft": { color: "#7f858f", order: -1, label: "N/GEPRÜFT" },
-};
-const geoLevelMeta = (level) => GEO_LEVEL_META[level] || GEO_LEVEL_META["keine"];
-const ago = (m) => (m < 60 ? m + "m" : Math.floor(m / 60) + "h");
-const FH = "https://finnhub.io/api/v1", TD = "https://api.twelvedata.com";
-const jget = (u) => fetch(u).then((r) => r.json());
-// Wie jget, aber mit hartem Client-Timeout: ohne das kann eine haengende
-// Server-Antwort den "lädt…"-Zustand einer Ansicht auf ewig einfrieren, ohne
-// dass jemals ein Fehler sichtbar wird (der try/catch drumherum kommt nie
-// zum Zug, weil das fetch-Promise selbst nie fertig wird).
-async function jgetTimeout(u, ms) {
-  const ctrl = new AbortController();
-  const to = setTimeout(() => ctrl.abort(), ms || 15000);
-  try {
-    const r = await fetch(u, { signal: ctrl.signal });
-    return await r.json();
-  } catch (e) {
-    if (ctrl.signal.aborted) throw new Error(`Zeitüberschreitung nach ${((ms || 15000) / 1000).toFixed(0)}s`);
-    throw e;
-  } finally {
-    clearTimeout(to);
-  }
-}
-const keyOf = (e) => e.y || e.s;
-const YF = "/.netlify/functions/quote";
-const FRED_FN = "/.netlify/functions/fred";
-async function fredGetBatch(ids) {
-  return jgetTimeout(`${FRED_FN}?ids=${encodeURIComponent(ids.join(","))}`, 15000);
-}
+/* ================= Aus theme.js / indicators.js / market-data.js importiert ================= */
+const { C, mono, inp, CUR, fmtCap, fmtVol, fmtMoney, fmtRatio, pctColor, ago, METRIC_META, RATIO_SUPPRESS_FOR_FINANCIALS, GEO_LEVEL_META, geoLevelMeta } = Theme;
+const { sma, rsi } = Indicators;
+const {
+  EU_PRESETS, ASIA_PRESETS, MACRO_PRESETS, INDEX_PRESETS, US_UNIVERSE, US_NAME, SECTORS,
+  FH, TD, YF, FRED_FN,
+  jget, jgetTimeout, keyOf, fredGetBatch,
+  fhQuote, tdQuote, tdSeries, yfGet, searchSymbol, localPresetMatch, resolveSymbol,
+  CHART_RANGES, getChart, getQuoteLite, getDetail, askGroq,
+} = MarketData;
 
 /* ================= LocalStorage persistence (standalone file, no window.storage) ================= */
 const LS = {
@@ -170,127 +63,6 @@ const LS = {
   set(k, v) { try { localStorage.setItem("term_" + k, JSON.stringify(v)); } catch {} },
   del(k) { try { localStorage.removeItem("term_" + k); } catch {} },
 };
-
-/* ================= Data layer (nur Finnhub/US — läuft garantiert im Browser) ================= */
-async function fhQuote(sym, k) { return jget(`${FH}/quote?symbol=${sym}&token=${k}`); }
-async function tdQuote(sym, k) { return jget(`${TD}/quote?symbol=${sym}&apikey=${k}`); }
-async function tdSeries(sym, k) {
-  const r = await jget(`${TD}/time_series?symbol=${sym}&interval=1day&outputsize=140&apikey=${k}`);
-  if (r?.status === "ok" && Array.isArray(r.values)) return { ok: true, series: r.values.map((v) => ({ t: v.datetime, p: +v.close })).reverse() };
-  return { ok: false, series: [] };
-}
-async function yfGet(yticker, range) {
-  const r = await jget(`${YF}?symbol=${encodeURIComponent(yticker)}${range ? `&range=${range}` : ""}`);
-  if (r?.error) throw new Error(r.error);
-  return r;
-}
-async function searchSymbol(query) {
-  try { const r = await jget(`${YF}?search=${encodeURIComponent(query)}`); return r?.quotes || []; } catch { return []; }
-}
-function localPresetMatch(query) {
-  const q = query.trim().toLowerCase(); if (!q) return null;
-  const all = [...EU_PRESETS, ...ASIA_PRESETS];
-  return all.find((p) => p.s.toLowerCase() === q || p.label.toLowerCase() === q) || all.find((p) => p.label.toLowerCase().includes(q)) || null;
-}
-async function resolveSymbol(query) {
-  const q = query.trim(); if (!q) return null;
-  const local = localPresetMatch(q);
-  if (local) return { s: local.s, y: local.y };
-  const hits = await searchSymbol(q);
-  const hit = hits[0];
-  if (!hit) return { s: q.toUpperCase() };
-  const short = hit.symbol.split(".")[0].split("=")[0].replace(/^\^/, "").toUpperCase();
-  return { s: short, y: hit.symbol };
-}
-const CHART_RANGES = [["1d", "1T"], ["5d", "5T"], ["1mo", "1M"], ["6mo", "6M"], ["1y", "1J"], ["5y", "5J"]];
-async function getChart(e, tdKey, range) {
-  try { const r = await yfGet(e.y || e.s, range || "6mo"); return { ok: Array.isArray(r.series) && r.series.length > 3, series: r.series || [] }; } catch {}
-  if (tdKey && !e.y) { const r = await tdSeries(e.s, tdKey); if (r.ok) return r; }
-  return { ok: false, series: [] };
-}
-async function getQuoteLite(e, fhKey) {
-  if (e.y) { try { const r = await yfGet(e.y); return { price: r.price, chgPct: r.chgPct }; } catch { return { price: null, chgPct: null }; } }
-  const q = await fhQuote(e.s, fhKey); return { price: q?.c ?? null, chgPct: q?.dp != null ? +(+q.dp).toFixed(2) : null };
-}
-async function getDetail(e, fhKey) {
-  // Globaler Wert (Europa/Asien) über Yahoo-Proxy
-  if (e.y) {
-    const r = await yfGet(e.y);
-    return {
-      s: e.s, y: e.y, region: "GLOBAL", name: r.name || e.s, sector: r.exchange || "—", currency: r.currency || "",
-      price: r.price, chg: r.chg, chgPct: r.chgPct, open: r.open, high: r.high, low: r.low, prevClose: r.prevClose,
-      mktcap: r.mktcap, pe: r.pe, eps: r.eps, divYield: r.divYield, target: r.target,
-      week52Low: r.week52Low, week52High: r.week52High, volume: r.volume, avgVolume: r.avgVolume, beta: r.beta, earningsDate: r.earningsDate,
-      recos: r.recos || [], news: r.news || [], financials: r.financials || [],
-      fundamentals: r.fundamentals || [], industry: r.industry || "", isFinancial: !!r.isFinancial,
-      source: r.source || null, partial: r.partial || null,
-    };
-  }
-  // US-Wert über Finnhub (mit Empfehlungen + News) + Yahoo (52W/Beta/Volumen)
-  const to = new Date().toISOString().slice(0, 10), from = new Date(Date.now() - 14 * 864e5).toISOString().slice(0, 10);
-  const [q, p, rec, news, yx] = await Promise.all([
-    fhQuote(e.s, fhKey), jget(`${FH}/stock/profile2?symbol=${e.s}&token=${fhKey}`),
-    jget(`${FH}/stock/recommendation?symbol=${e.s}&token=${fhKey}`), jget(`${FH}/company-news?symbol=${e.s}&from=${from}&to=${to}&token=${fhKey}`),
-    yfGet(e.s).catch(() => null),
-  ]);
-  if (!q || !q.c) throw new Error("Kein Kurs — US-Ticker prüfen, oder für Nicht-US den Preset/Börsen-Ticker nutzen (z.B. RHM.DE).");
-  const [nm, sec] = US_NAME[e.s] || [e.s, "—"]; const now = Date.now();
-  return {
-    s: e.s, region: "US", name: p?.name || nm, sector: p?.finnhubIndustry || sec, currency: "USD",
-    price: q?.c ?? null, chg: q?.d != null ? +(+q.d).toFixed(2) : null, chgPct: q?.dp != null ? +(+q.dp).toFixed(2) : null,
-    open: q?.o, high: q?.h, low: q?.l, prevClose: q?.pc, mktcap: p?.marketCapitalization ? +(p.marketCapitalization / 1000).toFixed(1) : null,
-    pe: yx?.pe ?? null, eps: yx?.eps ?? null, divYield: yx?.divYield ?? null, target: yx?.target ?? null,
-    week52Low: yx?.week52Low ?? null, week52High: yx?.week52High ?? null, volume: yx?.volume ?? null, avgVolume: yx?.avgVolume ?? null, beta: yx?.beta ?? null, earningsDate: yx?.earningsDate ?? null,
-    financials: yx?.financials || [],
-    fundamentals: yx?.fundamentals || [], industry: yx?.industry || "", isFinancial: !!(yx && yx.isFinancial),
-    source: yx?.source || "finnhub", partial: yx?.partial || null,
-    recos: Array.isArray(rec) ? rec.slice(0, 4).map((x) => ({ period: x.period, strongBuy: x.strongBuy, buy: x.buy, hold: x.hold, sell: x.sell, strongSell: x.strongSell })) : [],
-    news: Array.isArray(news) ? news.slice(0, 8).map((n) => ({ headline: n.headline, source: (n.source || "NEWS").toUpperCase().slice(0, 10), ago: Math.max(1, Math.floor((now - n.datetime * 1000) / 6e4)), summary: n.summary || "", url: n.url, tags: [e.s] })) : [],
-  };
-}
-
-/* ================= Groq AI (OpenAI-kompatibel, kostenlos, kein Kreditkarte nötig) ================= */
-async function askGroq(groqKey, systemPrompt, historyMsgs, latest) {
-  const messages = [
-    { role: "system", content: systemPrompt },
-    ...historyMsgs.map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
-    { role: "user", content: latest },
-  ];
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${groqKey}` },
-    body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages, max_tokens: 700, temperature: 0.4 }),
-  });
-  const data = await res.json();
-  if (data?.error) throw new Error(data.error.message || "Groq-Fehler");
-  return data?.choices?.[0]?.message?.content?.trim() || "Keine Antwort.";
-}
-
-/* ================= Technische Indikatoren ================= */
-function sma(vals, period) {
-  const out = new Array(vals.length).fill(null);
-  let sum = 0;
-  for (let i = 0; i < vals.length; i++) {
-    sum += vals[i];
-    if (i >= period) sum -= vals[i - period];
-    if (i >= period - 1) out[i] = sum / period;
-  }
-  return out;
-}
-function rsi(vals, period) {
-  const out = new Array(vals.length).fill(null);
-  if (vals.length < period + 1) return out;
-  let gain = 0, loss = 0;
-  for (let i = 1; i <= period; i++) { const d = vals[i] - vals[i - 1]; if (d >= 0) gain += d; else loss -= d; }
-  gain /= period; loss /= period;
-  out[period] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
-  for (let i = period + 1; i < vals.length; i++) {
-    const d = vals[i] - vals[i - 1]; const g = d > 0 ? d : 0, l = d < 0 ? -d : 0;
-    gain = (gain * (period - 1) + g) / period; loss = (loss * (period - 1) + l) / period;
-    out[i] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
-  }
-  return out;
-}
 
 /* ================= Chart (rendert Kursverlauf von Yahoo) ================= */
 function SvgChart({ series, up, overlays }) {
