@@ -14,10 +14,28 @@
   else root.Theme = mod;
 })(typeof self !== "undefined" ? self : this, function () {
 
+  // WICHTIG: Diese Farben sind mit den CSS-Custom-Properties in index.html
+  // (:root-Block) gespiegelt. C wird dort gebraucht, wo CSS nicht hinkommt -
+  // vor allem als fill/stroke in den SVG-Charts. Aenderungen immer an beiden
+  // Stellen machen, sonst driften Chart- und UI-Farben auseinander.
   const C = {
-    bg: "#000", panel: "#0a0b0c", panel2: "#050506", line: "#2a2b2e",
-    orange: "#ff8a1e", amber: "#ffb000", amberDim: "#8a5e15",
-    green: "#3fd07a", red: "#ff4d4d", blue: "#4ea3ff", white: "#e6e7ea", text: "#c9cbd0", muted: "#7f858f",
+    bg: "#000000",        // --bg
+    panel: "#0b0c0e",     // --surface
+    panel2: "#07080a",    // --surface-2
+    panel3: "#121316",    // --surface-3
+    line: "#24262b",      // --line
+    lineStrong: "#34373d",// --line-strong
+    orange: "#ff8a1e",    // --accent
+    amber: "#ffb000",     // --accent-2
+    amberDim: "#7a5416",  // --accent-dim
+    amberBg: "#17140a",   // --accent-bg
+    green: "#3fd07a",     // --up
+    red: "#ff5252",       // --down
+    blue: "#4ea3ff",      // --info
+    violet: "#c07af0",    // --violet
+    white: "#e8e9ec",     // --fg
+    text: "#c9cbd0",      // --fg-2
+    muted: "#8f959f",     // --fg-3
   };
   const mono = "ui-monospace, 'SF Mono', 'DejaVu Sans Mono', Menlo, monospace";
   const inp = { background: C.panel2, border: `1px solid ${C.line}`, color: C.amber, padding: "6px 8px", fontFamily: mono, fontSize: 12, outline: "none" };
@@ -34,7 +52,7 @@
     if (kind === "pct") return (v * 100).toFixed(1) + "%"; if (kind === "days") return v.toFixed(0) + "T";
     if (kind === "money") return fmtMoney(v); return v.toFixed(2) + "x"; };
   const pctColor = (p) => { if (p == null) return "transparent"; const t = Math.max(0, Math.min(100, p)) / 100;
-    return t >= 0.5 ? `rgba(63,208,122,${0.1 + (t - 0.5) * 0.9})` : `rgba(255,77,77,${0.1 + (0.5 - t) * 0.9})`; };
+    return t >= 0.5 ? `rgba(63,208,122,${0.1 + (t - 0.5) * 0.9})` : `rgba(255,82,82,${0.1 + (0.5 - t) * 0.9})`; };
   // Nicht in DIRECTIONS (peers.js), sondern hier: Anzeige-Metadaten. Reihenfolge = Gruppen-Reihenfolge in der UI.
   const METRIC_META = {
     grossMargin: { label: "Brutto-Marge", group: "Marge", fmt: "pct" }, ebitdaMargin: { label: "EBITDA-Marge", group: "Marge", fmt: "pct" },
@@ -55,12 +73,12 @@
 
   /* F6 WELTLAGE: Metadaten */
   const GEO_LEVEL_META = {
-    "kritisch": { color: "#ff4d4d", order: 4, label: "KRITISCH" },
+    "kritisch": { color: "#ff5252", order: 4, label: "KRITISCH" },
     "hoch": { color: "#ff7a45", order: 3, label: "HOCH" },
     "mittel": { color: "#ffb000", order: 2, label: "MITTEL" },
     "niedrig": { color: "#d9c05a", order: 1, label: "NIEDRIG" },
-    "keine": { color: "#7f858f", order: 0, label: "KEINE" },
-    "nicht geprüft": { color: "#7f858f", order: -1, label: "N/GEPRÜFT" },
+    "keine": { color: "#8f959f", order: 0, label: "KEINE" },
+    "nicht geprüft": { color: "#8f959f", order: -1, label: "N/GEPRÜFT" },
   };
   const geoLevelMeta = (level) => GEO_LEVEL_META[level] || GEO_LEVEL_META["keine"];
 
