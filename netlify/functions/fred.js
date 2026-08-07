@@ -18,6 +18,21 @@ const CACHE = new Map(); const TTL = 10 * 60 * 1000; // 10 Min
 // Bekannte Serien: passender Ruecklauf-Zeitraum je nach Frequenz (Tages-/Monats-/Quartalsdaten).
 const DEFAULT_YEARS = { UNRATE: 10, CPIAUCSL: 10, FEDFUNDS: 10, DGS10: 1, T10Y2Y: 1, GDP: 30, PAYEMS: 10, UMCSENT: 10, MORTGAGE30US: 3, M2SL: 10 };
 
+// Feste Provider-Timeouts sind hier bewusst NICHT die einzige Bremse: fetchOne()
+// bekommt zusaetzlich ein gemeinsames deadline ueber ALLE Serien und Wellen
+// hinweg, gegen das jeder Provider-Aufruf seinen eigenen Timeout zusaetzlich
+// kappt. Ohne das konnte eine einzelne Serie im Worst Case (FRED-Timeout +
+// DBnomics ueber 2 Kandidaten) schon fast 10s brauchen - mal 4 Wellen fuer die
+// 10 Makro-Serien haette das Netlify-Funktionslimit (Standard 10s) klar
+// gerissen und die GANZE Antwort waere verlorengegangen statt nur einzelner
+// Serien, die dann als "nicht verfuegbar" markiert werden.
+const FRED_CSV_TIMEOUT = 3000;
+const DBNOMICS_TIMEOUT = 2500;
+const FUNCTION_BUDGET_MS = 8500; // Sicherheitsabstand unter Netlifys 10s-Standardlimit
+const MIN_ATTEMPT_MS = 500; // unter dieser Restzeit lohnt kein weiterer Versuch mehr
+
+function timeLeft(deadline) { return deadline - Date.now(); }
+
 const BROWSER_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
   "Accept": "text/csv,text/plain,*/*",
@@ -41,10 +56,10 @@ function shapeSeries(id, rows) {
 }
 
 // --- Provider 1: FRED CSV -------------------------------------------------
-async function fromFredCsv(id, years) {
+async function fromFredCsv(id, years, timeoutMs) {
   const cosd = new Date(); cosd.setFullYear(cosd.getFullYear() - years);
   const url = `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(id)}&cosd=${cosd.toISOString().slice(0, 10)}`;
-  const res = await fetchWithTimeout(url, { headers: BROWSER_HEADERS }, 5000);
+  const res = await fetchWithTimeout(url, { headers: BROWSER_HEADERS }, timeoutMs || FRED_CSV_TIMEOUT);
   if (!res.ok) throw new Error(`FRED HTTP ${res.status}`);
   const txt = await res.text();
   const lines = txt.trim().split("\n");
@@ -82,15 +97,24 @@ function findObservations(node, depth) {
   return null;
 }
 
-async function fromDbnomics(id, years) {
+async function fromDbnomics(id, years, deadline) {
   const candidates = [
+    // Wahrscheinlichste Form zuerst: bei DBnomics ist fuer FRED-gespiegelte Serien
+    // der Dataset-Code oft identisch zur eigentlichen Serien-ID (3-Segment-Pfad).
+    `https://api.db.nomics.world/v22/series/FRED/${encodeURIComponent(id)}/${encodeURIComponent(id)}?observations=1`,
     `https://api.db.nomics.world/v22/series/FRED/${encodeURIComponent(id)}?observations=1`,
     `https://api.db.nomics.world/v22/series?series_ids=FRED/${encodeURIComponent(id)}&observations=1`,
   ];
   let lastErr = null;
   for (const url of candidates) {
+    // Gemeinsames Zeitbudget respektieren: ohne genug Restzeit lohnt kein
+    // weiterer Kandidat mehr - lieber sauber als "keine Zeit mehr" scheitern,
+    // statt das Gesamtbudget aller Serien/Wellen zu reissen.
+    const remaining = deadline ? timeLeft(deadline) : DBNOMICS_TIMEOUT;
+    if (remaining < MIN_ATTEMPT_MS) { lastErr = lastErr || new Error("Zeitbudget erreicht"); break; }
+    const timeoutMs = Math.max(MIN_ATTEMPT_MS, Math.min(DBNOMICS_TIMEOUT, remaining));
     try {
-      const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": BROWSER_HEADERS["User-Agent"] } }, 5000);
+      const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": BROWSER_HEADERS["User-Agent"] } }, timeoutMs);
       if (!res.ok) { lastErr = new Error(`DBnomics HTTP ${res.status}`); continue; }
       const json = await res.json();
       const obs = findObservations(json, 0);
@@ -116,15 +140,20 @@ async function fromDbnomics(id, years) {
   return null;
 }
 
-async function fetchOne(id, yearsIn) {
+async function fetchOne(id, yearsIn, deadline) {
   const years = Math.min(50, Math.max(1, parseInt(yearsIn || DEFAULT_YEARS[id] || 10, 10) || 10));
   const cacheKey = `${id}:${years}`;
   const c = CACHE.get(cacheKey);
   if (c && Date.now() - c.ts < TTL) return c.data;
 
+  if (deadline && timeLeft(deadline) < MIN_ATTEMPT_MS) {
+    if (c) return Object.assign({}, c.data, { stale: true });
+    return { id, error: "Zeitbudget erreicht, bevor diese Serie an der Reihe war" };
+  }
+
   const result = await tryChain([
-    { name: "fred", run: () => fromFredCsv(id, years) },
-    { name: "dbnomics", run: () => fromDbnomics(id, years) },
+    { name: "fred", run: () => fromFredCsv(id, years, deadline ? Math.max(MIN_ATTEMPT_MS, Math.min(FRED_CSV_TIMEOUT, timeLeft(deadline))) : FRED_CSV_TIMEOUT) },
+    { name: "dbnomics", run: () => fromDbnomics(id, years, deadline) },
   ]);
 
   if (!result.data) {
@@ -155,12 +184,22 @@ exports.handler = async (event) => {
     // starten bevor die erste einen Fehler gemeldet hat - der Circuit Breaker greift
     // dann erst beim naechsten Seitenaufruf. Mit Wellen von 3 loest die erste Welle
     // den Breaker aus und alle uebrigen Serien brechen sofort ab.
+    //
+    // Zusaetzlich ein gemeinsames Zeitbudget UEBER ALLE Wellen hinweg (siehe
+    // FUNCTION_BUDGET_MS oben): ohne das konnte im Worst Case eine einzelne
+    // Welle schon fast das Netlify-Funktionslimit ausschoepfen, wodurch die
+    // GESAMTE Antwort verlorenging statt nur einzelner Serien.
+    const deadline = Date.now() + FUNCTION_BUDGET_MS;
     const results = [];
     const CONCURRENCY = 3;
     for (let i = 0; i < ids.length; i += CONCURRENCY) {
+      if (timeLeft(deadline) < MIN_ATTEMPT_MS) {
+        for (const id of ids.slice(i)) results.push([id, { id, error: "Zeitbudget erreicht" }]);
+        break;
+      }
       const wave = ids.slice(i, i + CONCURRENCY);
       const settled = await Promise.all(wave.map(async (id) => {
-        try { return [id, await fetchOne(id, qp.years)]; } catch (e) { return [id, { id, error: String(e && e.message || e) }]; }
+        try { return [id, await fetchOne(id, qp.years, deadline)]; } catch (e) { return [id, { id, error: String(e && e.message || e) }]; }
       }));
       results.push(...settled);
     }
@@ -171,3 +210,6 @@ exports.handler = async (event) => {
     return { statusCode: 500, headers: cors, body: JSON.stringify({ error: String(e && e.message || e) }) };
   }
 };
+
+// Fuer Tests: Einzelfunktionen ohne HTTP-Handler-Wrapper zugaenglich machen.
+exports._internal = { fetchOne, fromFredCsv, fromDbnomics, shapeSeries, findObservations, FUNCTION_BUDGET_MS, MIN_ATTEMPT_MS };

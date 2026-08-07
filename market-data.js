@@ -47,15 +47,31 @@
     { s: "GOLD", y: "GC=F", label: "Gold" }, { s: "OIL", y: "CL=F", label: "Öl (WTI)" },
     { s: "EURUSD", y: "EURUSD=X", label: "EUR/USD" }, { s: "UST10Y", y: "^TNX", label: "US 10J-Rendite" },
   ];
+  // ~60 liquide US-Large-Caps ueber 11 Sektoren (vorher 30 ueber 7). Bewusst auf
+  // Werte begrenzt, die Finnhubs kostenloser Plan zuverlaessig mit Echtzeitkursen
+  // fuehrt - der Scanner fragt sie alle einzeln ab (siehe runScan), eine noch
+  // groessere Liste wuerde nur die Wartezeit strecken, ohne die Wellen-Abfrage
+  // (SCAN_WAVE) an Finnhubs Rate-Limit vorbeizubringen.
   const US_UNIVERSE = [
     ["AAPL", "Apple Inc", "Technology"], ["MSFT", "Microsoft", "Technology"], ["NVDA", "NVIDIA", "Technology"], ["GOOGL", "Alphabet", "Technology"],
     ["META", "Meta Platforms", "Technology"], ["AMD", "Adv Micro Dev", "Technology"], ["AVGO", "Broadcom", "Technology"], ["TSM", "TSMC", "Technology"],
-    ["QCOM", "Qualcomm", "Technology"], ["ORCL", "Oracle", "Technology"], ["TSLA", "Tesla", "Automotive"], ["F", "Ford Motor", "Automotive"],
-    ["GM", "General Motors", "Automotive"], ["AMZN", "Amazon", "Consumer"], ["NKE", "Nike", "Consumer"], ["MCD", "McDonald's", "Consumer"],
-    ["KO", "Coca-Cola", "Consumer"], ["JPM", "JPMorgan", "Financials"], ["V", "Visa", "Financials"], ["MA", "Mastercard", "Financials"],
-    ["GS", "Goldman Sachs", "Financials"], ["JNJ", "Johnson&Johnson", "Healthcare"], ["PFE", "Pfizer", "Healthcare"], ["LLY", "Eli Lilly", "Healthcare"],
-    ["UNH", "UnitedHealth", "Healthcare"], ["XOM", "Exxon Mobil", "Energy"], ["CVX", "Chevron", "Energy"], ["CAT", "Caterpillar", "Industrials"],
-    ["BA", "Boeing", "Industrials"], ["GE", "GE Aerospace", "Industrials"],
+    ["QCOM", "Qualcomm", "Technology"], ["ORCL", "Oracle", "Technology"], ["ADBE", "Adobe", "Technology"], ["CRM", "Salesforce", "Technology"],
+    ["INTC", "Intel", "Technology"], ["CSCO", "Cisco", "Technology"],
+    ["TSLA", "Tesla", "Automotive"], ["F", "Ford Motor", "Automotive"], ["GM", "General Motors", "Automotive"],
+    ["AMZN", "Amazon", "Consumer"], ["NKE", "Nike", "Consumer"], ["MCD", "McDonald's", "Consumer"], ["KO", "Coca-Cola", "Consumer"],
+    ["PEP", "PepsiCo", "Consumer"], ["SBUX", "Starbucks", "Consumer"], ["HD", "Home Depot", "Consumer"], ["TGT", "Target", "Consumer"],
+    ["DIS", "Walt Disney", "Consumer"], ["COST", "Costco", "Consumer"],
+    ["JPM", "JPMorgan", "Financials"], ["V", "Visa", "Financials"], ["MA", "Mastercard", "Financials"], ["GS", "Goldman Sachs", "Financials"],
+    ["BAC", "Bank of America", "Financials"], ["WFC", "Wells Fargo", "Financials"], ["MS", "Morgan Stanley", "Financials"], ["AXP", "American Express", "Financials"],
+    ["JNJ", "Johnson&Johnson", "Healthcare"], ["PFE", "Pfizer", "Healthcare"], ["LLY", "Eli Lilly", "Healthcare"], ["UNH", "UnitedHealth", "Healthcare"],
+    ["ABBV", "AbbVie", "Healthcare"], ["MRK", "Merck", "Healthcare"], ["TMO", "Thermo Fisher", "Healthcare"],
+    ["XOM", "Exxon Mobil", "Energy"], ["CVX", "Chevron", "Energy"], ["COP", "ConocoPhillips", "Energy"], ["SLB", "Schlumberger", "Energy"],
+    ["CAT", "Caterpillar", "Industrials"], ["BA", "Boeing", "Industrials"], ["GE", "GE Aerospace", "Industrials"], ["HON", "Honeywell", "Industrials"],
+    ["UPS", "United Parcel Service", "Industrials"], ["LMT", "Lockheed Martin", "Industrials"],
+    ["NFLX", "Netflix", "Communication Services"], ["CMCSA", "Comcast", "Communication Services"], ["T", "AT&T", "Communication Services"], ["VZ", "Verizon", "Communication Services"],
+    ["AMT", "American Tower", "Real Estate"], ["PLD", "Prologis", "Real Estate"],
+    ["NEE", "NextEra Energy", "Utilities"], ["DUK", "Duke Energy", "Utilities"],
+    ["LIN", "Linde", "Materials"], ["FCX", "Freeport-McMoRan", "Materials"],
   ];
   const US_NAME = Object.fromEntries(US_UNIVERSE.map(([s, n, sec]) => [s, [n, sec]]));
   const SECTORS = ["Alle", ...Array.from(new Set(US_UNIVERSE.map((u) => u[2])))];

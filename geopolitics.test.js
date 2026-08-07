@@ -19,7 +19,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(computeLevel(5, false), "hoch", "5+ Artikel allein reicht fuer hoch");
     assert.strictEqual(computeLevel(0, true), "hoch", "aktive ReliefWeb-Krise allein reicht fuer hoch");
     assert.strictEqual(computeLevel(5, true), "kritisch", "beide Signale zusammen -> kritisch");
-    console.log("Block 1/4 (Stufenlogik): OK");
+    console.log("Block 1/6 (Stufenlogik): OK");
   }
 
   // --- Normalfall: ReliefWeb liefert 2 Laender, GDELT antwortet fuer alle ---
@@ -55,7 +55,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.ok(report.countries.RUS, "feste Watchlist muss aufgefuellt sein");
     assert.strictEqual(report.countries.RUS.level, "keine");
     assert.strictEqual(report.countries.RUS.reliefwebActive, false);
-    console.log("Block 2/4 (Normalfall, kombinierte Signale): OK");
+    console.log("Block 2/6 (Normalfall, kombinierte Signale): OK");
   }
 
   // --- ReliefWeb faellt aus -> trotzdem Bericht mit fester Watchlist, Fehler sichtbar ---
@@ -71,7 +71,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.ok(report.reliefwebError, "ReliefWeb-Fehler muss im Bericht sichtbar sein");
     assert.ok(report.countries.RUS, "feste Watchlist funktioniert weiter ohne ReliefWeb");
     assert.strictEqual(Object.keys(report.countries).length, 14, "genau die feste Watchlist (14 Laender), keine dynamischen dazu");
-    console.log("Block 3/4 (ReliefWeb-Ausfall, feste Liste als Basis): OK");
+    console.log("Block 3/6 (ReliefWeb-Ausfall, feste Liste als Basis): OK");
   }
 
   // --- Zeitbudget: haengende GDELT-Aufrufe duerfen den Bericht nicht blockieren ---
@@ -93,7 +93,55 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.ok(dt < 10000, "Gesamtlaufzeit muss unter dem Netlify-Funktionslimit bleiben, auch wenn alles haengt");
     const levels = Object.values(report.countries).map((c) => c.level);
     assert.ok(levels.some((l) => l === "nicht geprüft"), "mindestens ein Land muss als 'nicht geprüft' markiert sein, nicht faelschlich als 'keine'");
-    console.log("Block 4/4 (Zeitbudget schuetzt vor Timeout-Sturm): OK");
+    console.log("Block 4/6 (Zeitbudget schuetzt vor Timeout-Sturm): OK");
+  }
+
+  // --- ReliefWeb: 400 auf gefilterte Anfrage -> Fallback auf ungefilterte Anfrage ---
+  {
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("reliefweb.int")) {
+        if (u.includes("filter")) return { ok: false, status: 400, json: async () => ({ error: "invalid filter value" }) };
+        // Ungefilterte Rueckfallanfrage liefert trotzdem verwertbare Daten
+        return { ok: true, status: 200, json: async () => ({ data: [
+          { fields: { name: "Sudan conflict escalation", date: { created: "2026-08-01T00:00:00" }, type: [{ name: "Complex Emergency" }], country: [{ iso3: "SDN", iso2: "SD", name: "Sudan" }] } },
+        ] }) };
+      }
+      if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
+      throw new Error("unerwartet: " + u);
+    };
+    const { buildReport } = freshHandler()._internal;
+    const report = await buildReport();
+    assert.strictEqual(report.reliefwebError, null, "400 auf die gefilterte Anfrage darf dank Fallback keinen sichtbaren Fehler hinterlassen");
+    assert.ok(report.countries.SDN && report.countries.SDN.reliefwebActive, "Rueckfallanfrage ohne Filter muss die Daten trotzdem liefern");
+    console.log("Block 5/6 (ReliefWeb 400 -> Fallback ohne Statusfilter): OK");
+  }
+
+  // --- Zeitbudget gilt AB FUNKTIONSSTART, nicht erst nach ReliefWeb ---
+  {
+    global.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.includes("reliefweb.int")) {
+        // Realistisch langsam, aber kein Timeout - simuliert einen trueben aber
+        // erfolgreichen ReliefWeb-Aufruf, der frueher faelschlich NICHT gegen das
+        // Gesamtbudget zaehlte.
+        await new Promise((r) => setTimeout(r, 1500));
+        return { ok: true, status: 200, json: async () => ({ data: [] }) };
+      }
+      if (u.includes("gdeltproject.org")) {
+        return new Promise((_, reject) => { if (opts && opts.signal) opts.signal.addEventListener("abort", () => reject(new Error("aborted"))); });
+      }
+      throw new Error("unerwartet: " + u);
+    };
+    const { buildReport } = freshHandler()._internal;
+    const t0 = Date.now();
+    const report = await buildReport();
+    const dt = Date.now() - t0;
+    console.log("  Dauer bei langsamem ReliefWeb (1.5s) + haengendem GDELT:", (dt / 1000).toFixed(1) + "s");
+    assert.ok(dt < 10000, "ReliefWeb-Zeit + GDELT-Wellen zusammen muessen unter Netlifys Funktionslimit bleiben");
+    const levels = Object.values(report.countries).map((c) => c.level);
+    assert.ok(levels.some((l) => l === "nicht geprüft"), "Budget muss trotz vorgelagerter ReliefWeb-Zeit greifen");
+    console.log("Block 6/6 (Zeitbudget ab Funktionsstart, deckt ReliefWeb + GDELT zusammen ab): OK");
   }
 
   console.log("\nAlle geopolitics.js-Tests erfolgreich.");
