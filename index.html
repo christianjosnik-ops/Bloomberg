@@ -195,6 +195,7 @@ async function getDetail(e, fhKey) {
       week52Low: r.week52Low, week52High: r.week52High, volume: r.volume, avgVolume: r.avgVolume, beta: r.beta, earningsDate: r.earningsDate,
       recos: r.recos || [], news: r.news || [], financials: r.financials || [],
       fundamentals: r.fundamentals || [], industry: r.industry || "", isFinancial: !!r.isFinancial,
+      source: r.source || null, partial: r.partial || null,
     };
   }
   // US-Wert über Finnhub (mit Empfehlungen + News) + Yahoo (52W/Beta/Volumen)
@@ -214,6 +215,7 @@ async function getDetail(e, fhKey) {
     week52Low: yx?.week52Low ?? null, week52High: yx?.week52High ?? null, volume: yx?.volume ?? null, avgVolume: yx?.avgVolume ?? null, beta: yx?.beta ?? null, earningsDate: yx?.earningsDate ?? null,
     financials: yx?.financials || [],
     fundamentals: yx?.fundamentals || [], industry: yx?.industry || "", isFinancial: !!(yx && yx.isFinancial),
+    source: yx?.source || "finnhub", partial: yx?.partial || null,
     recos: Array.isArray(rec) ? rec.slice(0, 4).map((x) => ({ period: x.period, strongBuy: x.strongBuy, buy: x.buy, hold: x.hold, sell: x.sell, strongSell: x.strongSell })) : [],
     news: Array.isArray(news) ? news.slice(0, 8).map((n) => ({ headline: n.headline, source: (n.source || "NEWS").toUpperCase().slice(0, 10), ago: Math.max(1, Math.floor((now - n.datetime * 1000) / 6e4)), summary: n.summary || "", url: n.url, tags: [e.s] })) : [],
   };
@@ -413,6 +415,12 @@ function RatioPanel({ ratioTickers, ratioData, ratioView, ratioBusy, ratioAddCmd
 
   const peerTable = (isComps && columns.length > 1) ? window.Peers.buildPeerTable(columns.map((c) => ({ id: c.key, ratios: c.ratios }))) : null;
   const anyFinancial = columns.some((c) => c.isFinancial);
+  // Welche Quellen haben die geladenen Datensaetze tatsaechlich geliefert? Bei einem
+  // Yahoo-Ausfall greift die Ersatzquelle (Stooq), die aber gar keine Jahresabschluesse
+  // kennt - dann gibt es hier zwangslaeufig keine Kennzahlen, und das muss man sehen.
+  const loadedDetails = ratioTickers.map((e) => ratioData[keyOf(e)]).filter(Boolean);
+  const usedSources = Array.from(new Set(loadedDetails.map((d) => d.source).filter(Boolean)));
+  const partialNote = loadedDetails.map((d) => d.partial).filter(Boolean)[0] || null;
   const groupOrder = ["Marge", "Liquidität", "Verschuldung", "Working Capital", "Rendite"];
   const groups = {}; Object.keys(METRIC_META).forEach((k) => { const g = METRIC_META[k].group; (groups[g] = groups[g] || []).push(k); });
 
@@ -450,11 +458,17 @@ function RatioPanel({ ratioTickers, ratioData, ratioView, ratioBusy, ratioAddCmd
     {ratioTickers.length > 0 && !ratioBusy && (<>
       {/* Dauerhaft sichtbares Datenpanel: Quelle, Stichtag, Zeitkonvention, Rechnungslegungsstandard */}
       <div style={{ background: C.panel2, border: `1px solid ${C.line}`, padding: "7px 12px", marginBottom: 8, fontSize: 10, color: C.muted, display: "flex", gap: 16, flexWrap: "wrap" }}>
-        <span><b style={{ color: C.text }}>QUELLE</b> Yahoo Finance (Jahresabschluss)</span>
+        <span><b style={{ color: C.text }}>QUELLE</b> {usedSources.length ? usedSources.join(" + ").toUpperCase() : "—"} (Jahresabschluss)</span>
         <span><b style={{ color: C.text }}>ZEITKONVENTION</b> Geschäftsjahr, keine TTM-Werte gemischt</span>
         <span><b style={{ color: C.text }}>RECHNUNGSLEGUNG</b> je Unternehmen ggf. abweichend (US-GAAP/IFRS)</span>
         {columns.map((c) => <span key={c.key}><b style={{ color: C.text }}>{isComps ? c.label : "GJ"} STICHTAG</b> {c.ratios ? c.ratios.year : "—"}</span>)}
       </div>
+
+      {partialNote && (
+        <div style={{ background: "#17140a", border: `1px solid ${C.amberDim}`, padding: "6px 12px", fontSize: 10.5, color: C.amber, marginBottom: 8 }}>
+          ⚠ {partialNote} Kennzahlen lassen sich daraus nicht berechnen.
+        </div>
+      )}
 
       {isComps && columns.length > 1 && (
         <div style={{ background: "#17140a", border: `1px solid ${C.amberDim}`, padding: "6px 12px", fontSize: 10.5, color: C.amber, marginBottom: 8 }}>
@@ -591,12 +605,19 @@ function App() {
     await Promise.all(INDEX_PRESETS.map(async (e) => { try { out[e.s] = await getQuoteLite(e, null); } catch {} }));
     setIdxQ((p) => ({ ...p, ...out }));
   };
+  // Wechselkurs mit Fallback-Kette: bereits geladener EUR/USD-Kurs -> Yahoo-FX
+  // -> Frankfurter (EZB-Referenzkurse, ohne API-Key).
   const ensureFx = async (currency) => {
     if (!currency || currency === "EUR" || fxRates[currency] != null) return;
+    if (currency === "USD" && idxQ.EURUSD?.price) { setFxRates((p) => ({ ...p, USD: 1 / idxQ.EURUSD.price })); return; }
     try {
-      if (currency === "USD" && idxQ.EURUSD?.price) { setFxRates((p) => ({ ...p, USD: 1 / idxQ.EURUSD.price })); return; }
       const r = await yfGet(`EUR${currency}=X`);
-      if (r?.price) setFxRates((p) => ({ ...p, [currency]: 1 / r.price }));
+      if (r?.price) { setFxRates((p) => ({ ...p, [currency]: 1 / r.price })); return; }
+    } catch {}
+    try {
+      const r = await jget(`https://api.frankfurter.app/latest?from=EUR&to=${encodeURIComponent(currency)}`);
+      const rate = r && r.rates && r.rates[currency];
+      if (rate) setFxRates((p) => ({ ...p, [currency]: 1 / rate }));
     } catch {}
   };
   const loadDetail = async (e, fk = fhKey, tk = tdKey) => {
@@ -873,6 +894,7 @@ function App() {
                 </div>
               </div>
               {d.error && <div style={{ color: C.red, fontSize: 10.5, marginTop: 6 }}>Fehler: {d.error} — Ticker/Börse prüfen.</div>}
+              {d.partial && <div style={{ color: C.amber, fontSize: 10.5, marginTop: 6 }}>⚠ {d.partial}</div>}
             </Panel>
 
             <Panel title={`CHART · ${d.s}`} right={<div style={{ display: "flex", gap: 3 }}>{CHART_RANGES.map(([r, l]) => <button key={r} onClick={() => changeChartRange(r)} style={{ background: chartRange === r ? C.amber : "transparent", color: chartRange === r ? "#000" : C.muted, border: `1px solid ${chartRange === r ? C.amber : C.line}`, fontSize: 9, padding: "2px 6px", cursor: "pointer", fontFamily: mono }}>{l}</button>)}</div>} style={{ marginBottom: 8 }}>
@@ -990,7 +1012,11 @@ function App() {
                       <span style={{ fontSize: 20, fontWeight: 700, color: C.white }}>{d.latest ?? "—"} <span style={{ fontSize: 11, color: C.muted }}>{m.unit}</span></span>
                       {d.chg != null && <span style={{ fontSize: 12, color: dUp ? C.green : C.red }}>{dUp ? "+" : ""}{d.chg}</span>}
                     </div>
-                    <div style={{ fontSize: 9.5, color: C.muted, marginBottom: 4 }}>Stand: {d.latestDate || "—"}</div>
+                    <div style={{ fontSize: 9.5, color: C.muted, marginBottom: 4 }}>
+                      Stand: {d.latestDate || "—"}
+                      {d.source && <span style={{ color: d.source === "fred" ? C.muted : C.blue }}> · Quelle: {d.source.toUpperCase()}</span>}
+                      {d.stale && <span style={{ color: C.amber }}> · veraltet (Cache)</span>}
+                    </div>
                     {d.series?.length > 3 ? <SvgChart series={d.series.map((s) => ({ t: s.t, p: s.v }))} up={dUp} /> : <div style={{ color: C.muted, fontSize: 10 }}>Kein Chart.</div>}
                   </>)}
                 </Panel>

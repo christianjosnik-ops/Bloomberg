@@ -3,6 +3,7 @@
 // Firmenprofil) WELTWEIT. Mit Cache(90s), Crumb+Cookie, Retry, UA-Rotation.
 
 const { normalizeStatements, isFinancialCompany } = require("./lib/normalizer");
+const { tryChain, fetchWithTimeout } = require("./lib/providers");
 
 const UAS = [
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
@@ -115,22 +116,35 @@ function shape(data, symbol) {
   out.volume = meta.regularMarketVolume != null ? +meta.regularMarketVolume : null;
 
   const baseSym = symbol.split(".")[0].toUpperCase();
+  // Kern-Woerter des Firmennamens fuer die Titel-Pruefung: Rechtsform-Suffixe und
+  // Fuellwoerter raus, sonst wuerde z.B. "AG" oder "Inc" praktisch jeden Treffer
+  // "relevant" machen. Nur Woerter >2 Zeichen zaehlen als brauchbares Signal.
+  const STOPWORDS = new Set(["inc", "incorporated", "corp", "corporation", "ltd", "limited", "plc", "se", "ag", "sa", "nv", "co", "company", "group", "holding", "holdings", "the", "and", "class"]);
+  const coreWords = (out.name || "").toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((w) => w.length > 2 && !STOPWORDS.has(w));
   const newsItems = (data.news && Array.isArray(data.news.news)) ? data.news.news : [];
-  out.news = newsItems
+  const scored = newsItems
     .filter((n) => n.title)
     .map((n) => {
       const related = Array.isArray(n.relatedTickers) ? n.relatedTickers.map((t) => t.toUpperCase()) : [];
+      const relatedMatch = related.includes(symbol.toUpperCase()) || related.includes(baseSym);
+      const titleLower = n.title.toLowerCase();
+      const nameMatch = coreWords.some((w) => titleLower.includes(w));
       return {
         headline: n.title, source: (n.publisher || "NEWS").toUpperCase().slice(0, 10),
         ago: n.providerPublishTime ? Math.max(1, Math.floor((Date.now() - n.providerPublishTime * 1000) / 6e4)) : 1,
         date: n.providerPublishTime ? new Date(n.providerPublishTime * 1000).toISOString().slice(0, 16).replace("T", " ") : "",
         summary: "", url: n.link, tags: [symbol],
-        _relevant: related.includes(symbol.toUpperCase()) || related.includes(baseSym) ? 1 : 0,
+        _relevant: relatedMatch || nameMatch,
       };
-    })
-    .sort((a, b) => b._relevant - a._relevant)
-    .slice(0, 10)
-    .map(({ _relevant, ...n }) => n);
+    });
+  // Echte Filterung, nicht nur Sortierung: Yahoos Suche ist eine allgemeine
+  // Volltextsuche, kein "News fuer dieses Wertpapier"-Endpunkt - ohne Filter
+  // landen thematisch lose passende Treffer im Ergebnis. Nur im Ausnahmefall,
+  // dass wirklich gar nichts als relevant erkannt wird, eine kleine, klar
+  // reduzierte Notfall-Auswahl zeigen statt komplett leer zu bleiben.
+  const relevant = scored.filter((n) => n._relevant);
+  const chosen = (relevant.length ? relevant : scored.slice(0, 3));
+  out.news = chosen.slice(0, 10).map(({ _relevant, ...n }) => n);
 
   const earnQs = data.earn && data.earn.quoteSummary && data.earn.quoteSummary.result && data.earn.quoteSummary.result[0];
   const yearly = (earnQs && earnQs.earnings && earnQs.earnings.financialsChart && earnQs.earnings.financialsChart.yearly) || [];
@@ -187,6 +201,70 @@ async function searchSymbols(query) {
     .map((x) => ({ symbol: x.symbol, name: x.shortname || x.longname || x.symbol, exchange: x.exchDisp || x.exchange || "", type: x.quoteType || "" }));
 }
 
+// --- Fallback-Quelle: Stooq (CSV, ohne API-Key) ---------------------------
+// Liefert NUR Kurs + Tagesreihe. Keine Kennzahlen, keine News, keine Analysten-
+// Empfehlungen - die bleiben bei einem Yahoo-Ausfall zwangslaeufig leer.
+// UNGETESTET gegen die echte Stooq-Antwort (kein Netzwerkzugriff in der
+// Entwicklungsumgebung); das Parsen ist defensiv, unerwartete Formen -> null.
+//
+// Symbol-Uebersetzung: Yahoo und Stooq benennen Maerkte unterschiedlich.
+// Abgedeckt sind die Faelle, die in der App vorkommen; alles Unbekannte wird
+// unveraendert durchgereicht und faellt notfalls einfach auf null zurueck.
+const STOOQ_SUFFIX = { DE: ".de", PA: ".fr", AS: ".nl", SW: ".ch", L: ".uk", MI: ".it", MC: ".es", T: ".jp", HK: ".hk", KS: ".kr", TW: ".tw" };
+function toStooqSymbol(symbol) {
+  if (!symbol) return null;
+  if (symbol.startsWith("^")) return null;   // Indizes: abweichende Codes, nicht zuverlaessig ableitbar
+  if (symbol.includes("=")) return null;      // Futures/FX: andere Systematik
+  const dot = symbol.lastIndexOf(".");
+  if (dot === -1) return symbol.toLowerCase() + ".us"; // ohne Suffix = US-Wert
+  const base = symbol.slice(0, dot).toLowerCase();
+  const suffix = STOOQ_SUFFIX[symbol.slice(dot + 1).toUpperCase()];
+  return suffix ? base + suffix : null;
+}
+const RANGE_DAYS = { "1d": 5, "5d": 10, "1mo": 35, "6mo": 190, "1y": 380, "5y": 1850 };
+
+async function fromStooq(symbol, range) {
+  const s = toStooqSymbol(symbol);
+  if (!s) return null;
+  const days = RANGE_DAYS[range] || 190;
+  const d2 = new Date(); const d1 = new Date(Date.now() - days * 864e5);
+  const fmt = (d) => d.toISOString().slice(0, 10).replace(/-/g, "");
+  const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(s)}&d1=${fmt(d1)}&d2=${fmt(d2)}&i=d`;
+  const res = await fetchWithTimeout(url, { headers: { "User-Agent": pickUA(), "Accept": "text/csv,*/*" } }, 6000);
+  if (!res.ok) throw new Error(`Stooq HTTP ${res.status}`);
+  const txt = await res.text();
+  const lines = txt.trim().split("\n");
+  if (lines.length < 3) return null; // Stooq liefert bei unbekanntem Symbol nur eine Zeile
+  const head = lines[0].toLowerCase().split(",");
+  const iDate = head.indexOf("date"), iClose = head.indexOf("close"), iVol = head.indexOf("volume");
+  const iOpen = head.indexOf("open"), iHigh = head.indexOf("high"), iLow = head.indexOf("low");
+  if (iDate === -1 || iClose === -1) return null;
+  const series = [];
+  for (let i = 1; i < lines.length; i++) {
+    const p = lines[i].split(",");
+    const t = p[iDate]; const c = parseFloat(p[iClose]);
+    if (t && !isNaN(c)) series.push({ t, p: +c.toFixed(2), v: iVol > -1 ? (parseFloat(p[iVol]) || null) : null });
+  }
+  if (series.length < 2) return null;
+  const lastLine = lines[lines.length - 1].split(",");
+  const price = series[series.length - 1].p;
+  const prevClose = series[series.length - 2].p;
+  const numAt = (idx) => { if (idx === -1) return null; const v = parseFloat(lastLine[idx]); return isNaN(v) ? null : +v.toFixed(2); };
+  return {
+    symbol, name: symbol, currency: "", exchange: "Stooq",
+    price, prevClose,
+    chg: +(price - prevClose).toFixed(2),
+    chgPct: prevClose ? +(((price - prevClose) / prevClose) * 100).toFixed(2) : null,
+    open: numAt(iOpen), high: numAt(iHigh), low: numAt(iLow),
+    series,
+    // Alles Folgende kann Stooq nicht liefern - explizit leer statt geraten:
+    mktcap: null, pe: null, eps: null, divYield: null, target: null, description: "", sector: "", industry: "",
+    recos: [], week52Low: null, week52High: null, volume: series[series.length - 1].v,
+    avgVolume: null, beta: null, earningsDate: null, news: [], financials: [], fundamentals: [], isFinancial: false,
+    partial: "Nur Kurs und Chart verfügbar (Ersatzquelle Stooq) — Kennzahlen, News und Analystendaten fehlen.",
+  };
+}
+
 exports.handler = async (event) => {
   const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type", "Content-Type": "application/json" };
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: cors, body: "" };
@@ -207,15 +285,16 @@ exports.handler = async (event) => {
   if (cachedVal && (Date.now() - cachedVal.ts) < TTL) return { statusCode: 200, headers: { ...cors, "X-Cache": "hit" }, body: JSON.stringify(cachedVal.data) };
 
   try {
-    const data = await fetchAll(symbol, range);
-    if (data.__error) {
-      if (cachedVal) return { statusCode: 200, headers: { ...cors, "X-Cache": "stale" }, body: JSON.stringify(cachedVal.data) };
-      return { statusCode: 502, headers: cors, body: JSON.stringify({ error: data.__error + " (Yahoo drosselt, kurz erneut versuchen)" }) };
-    }
-    const out = shape(data, symbol);
+    // Fallback-Kette: Yahoo (voller Datensatz) -> Stooq (nur Kurs + Chart).
+    const chain = await tryChain([
+      { name: "yahoo", run: async () => { const data = await fetchAll(symbol, range); return data.__error ? null : shape(data, symbol); } },
+      { name: "stooq", run: () => fromStooq(symbol, range) },
+    ]);
+    const out = chain.data ? Object.assign({}, chain.data, { source: chain.source }) : null;
     if (!out) {
       if (cachedVal) return { statusCode: 200, headers: { ...cors, "X-Cache": "stale" }, body: JSON.stringify(cachedVal.data) };
-      return { statusCode: 404, headers: cors, body: JSON.stringify({ error: "Kein Ergebnis (Ticker pruefen)" }) };
+      const detail = chain.attempts.map((a) => `${a.name}: ${a.skipped || a.error || "kein Ergebnis"}`).join(" | ");
+      return { statusCode: 502, headers: cors, body: JSON.stringify({ error: "Keine Quelle lieferte Daten (" + detail + ")" }) };
     }
     CACHE.set(cacheKey, { ts: Date.now(), data: out });
     return { statusCode: 200, headers: { ...cors, "X-Cache": "miss" }, body: JSON.stringify(out) };
