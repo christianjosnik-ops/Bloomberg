@@ -34,6 +34,12 @@
 <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js"></script>
 
+<!-- Reine Rechenlogik fuers F5-RATIO-Modul: eigenstaendige, nicht transpilierte
+     Dateien (kein Babel), Dual-Export fuer Wiederverwendung in Node-Tests und
+     spaeter im Zinssensitivitaets-Modul. Siehe ratios.js/peers.js. -->
+<script src="ratios.js"></script>
+<script src="peers.js"></script>
+
 <!-- App-Quelltext (wird unten kontrolliert kompiliert) -->
 <script type="text/plain" id="app-src">
 const { useState, useMemo, useRef, useEffect } = React;
@@ -94,6 +100,32 @@ const US_NAME = Object.fromEntries(US_UNIVERSE.map(([s, n, sec]) => [s, [n, sec]
 const SECTORS = ["Alle", ...Array.from(new Set(US_UNIVERSE.map((u) => u[2])))];
 const fmtCap = (b) => (b == null ? "—" : b >= 1000 ? (b / 1000).toFixed(2) + "T" : b.toFixed(1) + "B");
 const fmtVol = (v) => (v == null ? "—" : v >= 1e9 ? (v / 1e9).toFixed(2) + "B" : v >= 1e6 ? (v / 1e6).toFixed(1) + "M" : v >= 1e3 ? (v / 1e3).toFixed(0) + "K" : String(v));
+
+/* ================= F5 RATIO: Formatierung + Metrik-Metadaten (UI-Schicht, importiert nur aus Ratios/Peers) ================= */
+const fmtMoney = (v) => { if (v == null) return "n/a"; const sign = v < 0 ? "-" : ""; const av = Math.abs(v);
+  return sign + (av >= 1e9 ? (av / 1e9).toFixed(2) + "B" : av >= 1e6 ? (av / 1e6).toFixed(1) + "M" : av >= 1e3 ? (av / 1e3).toFixed(0) + "K" : av.toFixed(0)); };
+const fmtRatio = (v, kind) => { if (v == null) return "n/a";
+  if (kind === "pct") return (v * 100).toFixed(1) + "%"; if (kind === "days") return v.toFixed(0) + "T";
+  if (kind === "money") return fmtMoney(v); return v.toFixed(2) + "x"; };
+const pctColor = (p) => { if (p == null) return "transparent"; const t = Math.max(0, Math.min(100, p)) / 100;
+  return t >= 0.5 ? `rgba(63,208,122,${0.1 + (t - 0.5) * 0.9})` : `rgba(255,77,77,${0.1 + (0.5 - t) * 0.9})`; };
+// Nicht in DIRECTIONS (peers.js), sondern hier: Anzeige-Metadaten. Reihenfolge = Gruppen-Reihenfolge in der UI.
+const METRIC_META = {
+  grossMargin: { label: "Brutto-Marge", group: "Marge", fmt: "pct" }, ebitdaMargin: { label: "EBITDA-Marge", group: "Marge", fmt: "pct" },
+  ebitMargin: { label: "EBIT-Marge", group: "Marge", fmt: "pct" }, netMargin: { label: "Netto-Marge", group: "Marge", fmt: "pct" },
+  fcfMargin: { label: "FCF-Marge", group: "Marge", fmt: "pct" },
+  currentRatio: { label: "Current Ratio", group: "Liquidität", fmt: "x" }, quickRatio: { label: "Quick Ratio", group: "Liquidität", fmt: "x" },
+  cashRatio: { label: "Cash Ratio", group: "Liquidität", fmt: "x" },
+  netDebt: { label: "Net Debt", group: "Verschuldung", fmt: "money" }, netDebtToEbitda: { label: "Net Debt/EBITDA", group: "Verschuldung", fmt: "x" },
+  interestCoverage: { label: "Zinsdeckung", group: "Verschuldung", fmt: "x" }, debtToEquity: { label: "Debt/Equity", group: "Verschuldung", fmt: "x" },
+  equityRatio: { label: "EK-Quote", group: "Verschuldung", fmt: "pct" },
+  dso: { label: "DSO", group: "Working Capital", fmt: "days" }, dio: { label: "DIO", group: "Working Capital", fmt: "days" },
+  dpo: { label: "DPO", group: "Working Capital", fmt: "days" }, ccc: { label: "Cash Conversion Cycle", group: "Working Capital", fmt: "days" },
+  roe: { label: "ROE", group: "Rendite", fmt: "pct" }, roa: { label: "ROA", group: "Rendite", fmt: "pct" }, roic: { label: "ROIC", group: "Rendite", fmt: "pct" },
+};
+// Working-Capital-/Verschuldungskennzahlen ergeben fuer Banken/Versicherer kein sinnvolles Bild
+// (siehe Edge-Case-Vorgabe) - werden fuer diese Gruppen ausgeblendet statt Unsinn anzuzeigen.
+const RATIO_SUPPRESS_FOR_FINANCIALS = ["currentRatio", "quickRatio", "cashRatio", "netDebt", "netDebtToEbitda", "interestCoverage", "debtToEquity", "equityRatio", "dso", "dio", "dpo", "ccc"];
 const ago = (m) => (m < 60 ? m + "m" : Math.floor(m / 60) + "h");
 const FH = "https://finnhub.io/api/v1", TD = "https://api.twelvedata.com";
 const jget = (u) => fetch(u).then((r) => r.json());
@@ -162,6 +194,7 @@ async function getDetail(e, fhKey) {
       mktcap: r.mktcap, pe: r.pe, eps: r.eps, divYield: r.divYield, target: r.target,
       week52Low: r.week52Low, week52High: r.week52High, volume: r.volume, avgVolume: r.avgVolume, beta: r.beta, earningsDate: r.earningsDate,
       recos: r.recos || [], news: r.news || [], financials: r.financials || [],
+      fundamentals: r.fundamentals || [], industry: r.industry || "", isFinancial: !!r.isFinancial,
     };
   }
   // US-Wert über Finnhub (mit Empfehlungen + News) + Yahoo (52W/Beta/Volumen)
@@ -180,6 +213,7 @@ async function getDetail(e, fhKey) {
     pe: yx?.pe ?? null, eps: yx?.eps ?? null, divYield: yx?.divYield ?? null, target: yx?.target ?? null,
     week52Low: yx?.week52Low ?? null, week52High: yx?.week52High ?? null, volume: yx?.volume ?? null, avgVolume: yx?.avgVolume ?? null, beta: yx?.beta ?? null, earningsDate: yx?.earningsDate ?? null,
     financials: yx?.financials || [],
+    fundamentals: yx?.fundamentals || [], industry: yx?.industry || "", isFinancial: !!(yx && yx.isFinancial),
     recos: Array.isArray(rec) ? rec.slice(0, 4).map((x) => ({ period: x.period, strongBuy: x.strongBuy, buy: x.buy, hold: x.hold, sell: x.sell, strongSell: x.strongSell })) : [],
     news: Array.isArray(news) ? news.slice(0, 8).map((n) => ({ headline: n.headline, source: (n.source || "NEWS").toUpperCase().slice(0, 10), ago: Math.max(1, Math.floor((now - n.datetime * 1000) / 6e4)), summary: n.summary || "", url: n.url, tags: [e.s] })) : [],
   };
@@ -357,6 +391,161 @@ function NewsList({ items, onTag }) {
   </div>));
 }
 
+/* ================= F5 RATIO ================= */
+function RatioPanel({ ratioTickers, ratioData, ratioView, ratioBusy, ratioAddCmd, setRatioAddCmd, addRatioPeer, rmRatioPeer, openRatio, loadDetail, chartCell, setChartCell, dupontOpen, setDupontOpen }) {
+  const isComps = ratioView === "comps";
+
+  // Spalten bestimmen: bei COMPS = Firmen (je letztes GJ), sonst = Jahre einer einzelnen Firma.
+  let columns = [];
+  if (isComps) {
+    columns = ratioTickers.map((e) => {
+      const d = ratioData[keyOf(e)];
+      const series = d && d.fundamentals ? window.Ratios.computeSeries(d.fundamentals) : [];
+      return { key: keyOf(e), label: e.s, ratios: series[0] || null, current: series[0] || null, prior: series[1] || null, isFinancial: !!(d && d.isFinancial), error: d && d.error, loaded: !!d };
+    });
+  } else if (ratioTickers.length) {
+    const e = ratioTickers[0]; const d = ratioData[keyOf(e)];
+    const series = d && d.fundamentals ? window.Ratios.computeSeries(d.fundamentals) : [];
+    const years = ratioView === "series" ? series.slice(0, 5) : series.slice(0, 1);
+    columns = years.map((row, i) => ({ key: String(row.year), label: String(row.year), ratios: row, current: row, prior: series[i + 1] || null, isFinancial: !!(d && d.isFinancial), error: d && d.error, loaded: !!d }));
+    if (!columns.length && d) columns = [{ key: "—", label: "—", ratios: null, current: null, prior: null, isFinancial: !!d.isFinancial, error: d.error || "Keine Jahresabschlussdaten verfügbar.", loaded: true }];
+  }
+
+  const peerTable = (isComps && columns.length > 1) ? window.Peers.buildPeerTable(columns.map((c) => ({ id: c.key, ratios: c.ratios }))) : null;
+  const anyFinancial = columns.some((c) => c.isFinancial);
+  const groupOrder = ["Marge", "Liquidität", "Verschuldung", "Working Capital", "Rendite"];
+  const groups = {}; Object.keys(METRIC_META).forEach((k) => { const g = METRIC_META[k].group; (groups[g] = groups[g] || []).push(k); });
+
+  const chartFor = ratioTickers.length ? (isComps ? ratioTickers.find((e) => keyOf(e) === (chartCell && chartCell.colKey)) : ratioTickers[0]) : null;
+  const chartSeries = (() => {
+    if (!chartCell || !chartFor) return [];
+    const d = ratioData[keyOf(chartFor)]; if (!d || !d.fundamentals) return [];
+    return window.Ratios.computeSeries(d.fundamentals).slice().reverse()
+      .filter((r) => r[chartCell.metric] != null).map((r) => ({ t: String(r.year), p: r[chartCell.metric] }));
+  })();
+
+  return (<>
+    <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
+      <span style={{ color: C.muted, fontSize: 10.5 }}>{isComps ? "PEER-VERGLEICH" : ratioView === "series" ? "ZEITREIHE" : "KENNZAHLEN · LETZTES GJ"}</span>
+      {ratioTickers.length > 0 && <span style={{ color: C.text, fontSize: 10.5 }}>· {ratioTickers.map((e) => e.s).join(", ")}</span>}
+      <div style={{ flex: 1 }} />
+      {ratioTickers.length === 1 && (
+        <button onClick={() => openRatio(ratioTickers, ratioView === "series" ? "single" : "series")} style={{ background: "transparent", color: C.amber, border: `1px solid ${C.amberDim}`, fontSize: 10, padding: "3px 9px", cursor: "pointer", fontFamily: mono }}>
+          {ratioView === "series" ? "NUR LETZTES GJ" : "5J ZEITREIHE"}
+        </button>
+      )}
+      {ratioTickers.length > 0 && ratioTickers.length < 6 && (<>
+        <input value={ratioAddCmd} onChange={(e) => setRatioAddCmd(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addRatioPeer()} placeholder="+ Ticker/Name für Vergleich" style={{ ...inp, width: 190, color: C.white }} />
+        <button onClick={() => addRatioPeer()} style={{ background: C.amber, color: "#000", border: "none", padding: "6px 10px", cursor: "pointer", fontFamily: mono, fontWeight: 700, fontSize: 11 }}>+ COMPS</button>
+      </>)}
+    </div>
+
+    {!ratioTickers.length && !ratioBusy && (
+      <div style={{ color: C.muted, fontSize: 12, padding: 24, textAlign: "center", background: C.panel, border: `1px solid ${C.line}` }}>
+        Noch keine Werte geladen. Kommandozeile oben: <span style={{ color: C.amber }}>AAPL RATIO</span>, <span style={{ color: C.amber }}>AAPL RATIO 5Y</span> oder <span style={{ color: C.amber }}>AAPL COMPS MSFT GOOGL</span>.
+      </div>
+    )}
+    {ratioBusy && <div style={{ color: C.muted, fontSize: 11, padding: 12 }}>lädt…</div>}
+
+    {ratioTickers.length > 0 && !ratioBusy && (<>
+      {/* Dauerhaft sichtbares Datenpanel: Quelle, Stichtag, Zeitkonvention, Rechnungslegungsstandard */}
+      <div style={{ background: C.panel2, border: `1px solid ${C.line}`, padding: "7px 12px", marginBottom: 8, fontSize: 10, color: C.muted, display: "flex", gap: 16, flexWrap: "wrap" }}>
+        <span><b style={{ color: C.text }}>QUELLE</b> Yahoo Finance (Jahresabschluss)</span>
+        <span><b style={{ color: C.text }}>ZEITKONVENTION</b> Geschäftsjahr, keine TTM-Werte gemischt</span>
+        <span><b style={{ color: C.text }}>RECHNUNGSLEGUNG</b> je Unternehmen ggf. abweichend (US-GAAP/IFRS)</span>
+        {columns.map((c) => <span key={c.key}><b style={{ color: C.text }}>{isComps ? c.label : "GJ"} STICHTAG</b> {c.ratios ? c.ratios.year : "—"}</span>)}
+      </div>
+
+      {isComps && columns.length > 1 && (
+        <div style={{ background: "#17140a", border: `1px solid ${C.amberDim}`, padding: "6px 12px", fontSize: 10.5, color: C.amber, marginBottom: 8 }}>
+          ⚠ Rechnungslegungsstandards können zwischen den verglichenen Unternehmen abweichen (z.B. IFRS vs. US-GAAP) — Kennzahlen sind dadurch nur eingeschränkt direkt vergleichbar.
+        </div>
+      )}
+
+      <div style={{ background: C.panel, border: `1px solid ${C.line}`, overflowX: "auto", marginBottom: 8 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+          <thead><tr>
+            <th style={{ textAlign: "left", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>KENNZAHL</th>
+            {columns.map((c) => (
+              <th key={c.key} style={{ textAlign: "right", padding: "6px 8px", color: C.orange, fontSize: 10, borderBottom: `1px solid ${C.amberDim}`, whiteSpace: "nowrap", cursor: isComps ? "pointer" : "default" }}
+                onClick={() => isComps && loadDetail(ratioTickers.find((e) => keyOf(e) === c.key))}>
+                {c.label}{isComps && ratioTickers.length > 1 && <span onClick={(ev) => { ev.stopPropagation(); rmRatioPeer(ratioTickers.find((e) => keyOf(e) === c.key)); }} style={{ color: C.muted, marginLeft: 6, cursor: "pointer" }}>×</span>}
+              </th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {!columns.some((c) => c.ratios) && (
+              <tr><td colSpan={columns.length + 1} style={{ padding: 16, textAlign: "center", color: C.muted, fontSize: 11 }}>
+                {columns.some((c) => c.error) ? "Fehler: " + columns.find((c) => c.error).error : "Keine Jahresabschlussdaten verfügbar."}
+              </td></tr>
+            )}
+            {groupOrder.map((group) => {
+              const keys = (groups[group] || []).filter((k) => !(anyFinancial && RATIO_SUPPRESS_FOR_FINANCIALS.includes(k)));
+              if (!keys.length) return null;
+              return (
+                <React.Fragment key={group}>
+                  <tr><td colSpan={columns.length + 1} style={{ padding: "5px 8px", color: C.blue, fontSize: 9.5, letterSpacing: 1, background: C.panel2 }}>{group.toUpperCase()}</td></tr>
+                  {keys.map((mk) => (
+                    <tr key={mk}>
+                      <td style={{ padding: "5px 8px", color: C.text, whiteSpace: "nowrap" }}>{METRIC_META[mk].label}</td>
+                      {columns.map((c) => {
+                        const v = c.ratios ? c.ratios[mk] : null;
+                        const row = peerTable ? peerTable.rows.find((r) => r.id === c.key) : null;
+                        const pct = row ? row.percentiles[mk] : null;
+                        return (
+                          <td key={c.key} onClick={() => v != null && setChartCell({ metric: mk, colKey: c.key })}
+                            style={{ padding: "5px 8px", textAlign: "right", cursor: v != null ? "pointer" : "default", background: pctColor(pct), color: v == null ? C.muted : C.white }}>
+                            {fmtRatio(v, METRIC_META[mk].fmt)}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+        {anyFinancial && <div style={{ padding: "6px 12px", color: C.muted, fontSize: 10, borderTop: `1px solid ${C.line}` }}>Working-Capital- und Verschuldungskennzahlen sind für Banken/Versicherer ausgeblendet (für dieses Geschäftsmodell nicht aussagekräftig).</div>}
+      </div>
+
+      {/* DuPont-Zerlegung, aufklappbar */}
+      <Panel title="DUPONT-ZERLEGUNG" right={<span onClick={() => setDupontOpen(!dupontOpen)} style={{ color: C.amber, fontSize: 11, cursor: "pointer" }}>{dupontOpen ? "▾ zu" : "▸ auf"}</span>} style={{ marginBottom: 8 }}>
+        {!dupontOpen ? (
+          <div style={{ color: C.muted, fontSize: 11 }}>ROE = Nettomarge × Kapitalumschlag × EK-Multiplikator. Aufklappen für die Zerlegung je {isComps ? "Unternehmen" : "Jahr"}.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+              <thead><tr>
+                <th style={{ textAlign: "left", padding: "4px 8px", color: C.muted, fontSize: 10 }}>DUPONT</th>
+                {columns.map((c) => <th key={c.key} style={{ textAlign: "right", padding: "4px 8px", color: C.orange, fontSize: 10 }}>{c.label}</th>)}
+              </tr></thead>
+              <tbody>
+                {[["netMargin", "Nettomarge", "pct"], ["assetTurnover", "Kapitalumschlag", "x"], ["equityMultiplier", "EK-Multiplikator", "x"], ["roe", "= ROE", "pct"]].map(([k, label, fmt]) => (
+                  <tr key={k}>
+                    <td style={{ padding: "4px 8px", color: C.text }}>{label}</td>
+                    {columns.map((c) => {
+                      if (!c.current) return <td key={c.key} style={{ padding: "4px 8px", textAlign: "right", color: C.muted }}>n/a</td>;
+                      const dp = window.Ratios.dupont(c.current, c.prior);
+                      return <td key={c.key} style={{ padding: "4px 8px", textAlign: "right", color: C.white }}>{fmtRatio(dp[k], fmt)}</td>;
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+
+      {chartCell && (
+        <Panel title={`${METRIC_META[chartCell.metric].label} · ${chartFor ? chartFor.s : ""} · Verlauf`} right={<span onClick={() => setChartCell(null)} style={{ color: C.muted, fontSize: 11, cursor: "pointer" }}>× schließen</span>}>
+          {chartSeries.length > 1 ? <SvgChart series={chartSeries} up={chartSeries[chartSeries.length - 1].p >= chartSeries[0].p} /> : <div style={{ color: C.muted, fontSize: 11 }}>Nicht genug Jahre für einen Verlauf (mind. 2 nötig).</div>}
+        </Panel>
+      )}
+    </>)}
+  </>);
+}
+
 /* ================= App ================= */
 function App() {
   const [booted, setBooted] = useState(false);
@@ -420,7 +609,28 @@ function App() {
     setDLoad(false);
   };
   const changeChartRange = (range) => { setChartRange(range); getChart(active, tdKey, range).then(setChart); };
-  const goCmd = async (q) => { const query = (q ?? cmd).trim(); if (!query) return; setCmd(""); setSuggestions([]); const resolved = await resolveSymbol(query); if (resolved) loadDetail(resolved); };
+  // Kommandozeilen-Grammatik: "<TICKER/NAME> RATIO", "<TICKER/NAME> RATIO 5Y",
+  // "<TICKER/NAME> COMPS <T1> <T2> ...". Ohne erkanntes Keyword: bisheriges
+  // Verhalten (Ticker/Name auflösen, F1 MARKT laden).
+  const goCmd = async (q) => {
+    const raw = (q ?? cmd).trim(); if (!raw) return; setCmd(""); setSuggestions([]);
+    const tokens = raw.split(/\s+/); const upper = tokens.map((t) => t.toUpperCase());
+    const ratioIdx = upper.indexOf("RATIO");
+    const compsIdx = upper.indexOf("COMPS");
+    if (ratioIdx > 0) {
+      const resolved = await resolveSymbol(tokens.slice(0, ratioIdx).join(" "));
+      if (resolved) openRatio([resolved], upper[ratioIdx + 1] === "5Y" ? "series" : "single");
+      return;
+    }
+    if (compsIdx > 0) {
+      const queries = [tokens.slice(0, compsIdx).join(" "), ...tokens.slice(compsIdx + 1)].filter(Boolean);
+      const resolvedAll = (await Promise.all(queries.map((t) => resolveSymbol(t)))).filter(Boolean);
+      if (resolvedAll.length) openRatio(resolvedAll.slice(0, 6), "comps");
+      return;
+    }
+    const resolved = await resolveSymbol(raw);
+    if (resolved) loadDetail(resolved);
+  };
   const selectSuggestion = (hit) => {
     const short = hit.symbol.split(".")[0].split("=")[0].replace(/^\^/, "").toUpperCase();
     setCmd(""); setSuggestions([]); loadDetail({ s: short, y: hit.symbol });
@@ -523,20 +733,38 @@ function App() {
   };
   useEffect(() => { if (connected && tab === "makro" && !Object.keys(macro).length) loadMacro(); }, [connected, tab]);
 
-  /* Peer-Vergleich */
-  const [compare, setCompare] = useState([]); const [compareData, setCompareData] = useState({});
-  const [cmpCmd, setCmpCmd] = useState(""); const [cmpBusy, setCmpBusy] = useState(false);
-  const addCompare = async (q) => {
-    const query = (q ?? cmpCmd).trim(); if (!query || compare.length >= 6) return; setCmpCmd(""); setCmpBusy(true);
-    const resolved = await resolveSymbol(query);
-    if (resolved && !compare.find((x) => keyOf(x) === keyOf(resolved))) {
-      setCompare((p) => [...p, resolved]);
-      try { const det = await getDetail(resolved, fhKey); setCompareData((p) => ({ ...p, [keyOf(resolved)]: det })); }
-      catch (e) { setCompareData((p) => ({ ...p, [keyOf(resolved)]: { s: resolved.s, error: e.message } })); }
-    }
-    setCmpBusy(false);
+  /* F5 RATIO: Kennzahlen / Zeitreihe / Peer-Vergleich (COMPS) */
+  const [ratioTickers, setRatioTickers] = useState([]); // [{s,y}, ...] - 1 Ticker (single/series) oder mehrere (comps)
+  const [ratioData, setRatioData] = useState({}); // keyOf -> getDetail()-Ergebnis (inkl. fundamentals/isFinancial)
+  const [ratioView, setRatioView] = useState("single"); // "single" | "series" | "comps"
+  const [ratioBusy, setRatioBusy] = useState(false);
+  const [ratioAddCmd, setRatioAddCmd] = useState("");
+  const [chartCell, setChartCell] = useState(null); // { metric, colKey } - fuer Klick-auf-Zelle -> 5J-Chart
+  const [dupontOpen, setDupontOpen] = useState(false);
+
+  const loadRatioData = async (list) => {
+    setRatioBusy(true);
+    const out = {};
+    await Promise.all(list.map(async (e) => {
+      try { out[keyOf(e)] = await getDetail(e, fhKey); }
+      catch (er) { out[keyOf(e)] = { s: e.s, error: er.message, fundamentals: [] }; }
+    }));
+    setRatioData((p) => ({ ...p, ...out }));
+    setRatioBusy(false);
   };
-  const rmCompare = (e) => { setCompare((p) => p.filter((x) => keyOf(x) !== keyOf(e))); setCompareData((p) => { const n = { ...p }; delete n[keyOf(e)]; return n; }); };
+  const openRatio = (list, view) => {
+    setTab("ratio"); setRatioView(view); setRatioTickers(list); setChartCell(null);
+    loadRatioData(list);
+  };
+  const addRatioPeer = async (q) => {
+    const query = (q ?? ratioAddCmd).trim(); if (!query || ratioTickers.length >= 6) return; setRatioAddCmd("");
+    const resolved = await resolveSymbol(query);
+    if (resolved && !ratioTickers.find((x) => keyOf(x) === keyOf(resolved))) {
+      const list = [...ratioTickers, resolved];
+      setRatioTickers(list); setRatioView("comps"); loadRatioData([resolved]);
+    }
+  };
+  const rmRatioPeer = (e) => setRatioTickers((p) => p.filter((x) => keyOf(x) !== keyOf(e)));
 
   if (!booted) return <div style={{ background: C.bg, minHeight: "100vh", color: C.amber, fontFamily: mono, display: "flex", alignItems: "center", justifyContent: "center" }}>lädt…</div>;
 
@@ -591,7 +819,7 @@ function App() {
         <div style={{ position: "relative", flex: 1, minWidth: 150 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.panel2, border: `1px solid ${C.amberDim}`, padding: "4px 8px" }}>
             <span style={{ color: C.orange }}>{">"}</span>
-            <input value={cmd} onChange={(e) => setCmd(e.target.value)} onKeyDown={(e) => e.key === "Enter" && goCmd()} onBlur={() => setTimeout(() => setSuggestions([]), 150)} placeholder="TICKER ODER NAME + GO (z.B. Puma)" style={{ flex: 1, background: "transparent", border: "none", color: C.amber, fontFamily: mono, fontSize: 12, outline: "none" }} />
+            <input value={cmd} onChange={(e) => setCmd(e.target.value)} onKeyDown={(e) => e.key === "Enter" && goCmd()} onBlur={() => setTimeout(() => setSuggestions([]), 150)} placeholder="TICKER + GO, oder AAPL RATIO / AAPL RATIO 5Y / AAPL COMPS MSFT" style={{ flex: 1, background: "transparent", border: "none", color: C.amber, fontFamily: mono, fontSize: 12, outline: "none" }} />
             <span className="caret" style={{ color: C.orange }}>▊</span>
           </div>
           {cmd.trim().length >= 2 && (suggestions.length > 0 || suggestDone) && (
@@ -611,7 +839,7 @@ function App() {
         <span onClick={disconnect} style={{ color: C.muted, fontSize: 10, cursor: "pointer", border: `1px solid ${C.line}`, padding: "2px 6px" }}>LOGOUT</span>
       </div>
       <div style={{ background: "#000", borderBottom: `1px solid ${C.line}`, padding: "5px 12px", display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-        {Fkey("F1 MARKT", "markt", C.amber)}{Fkey("F2 SCANNER", "scanner", C.green)}{Fkey("F3 NEWS", "news", C.red)}{Fkey("F4 MAKRO", "makro", C.blue)}{Fkey("F5 VERGLEICH", "vergleich", "#c07af0")}
+        {Fkey("F1 MARKT", "markt", C.amber)}{Fkey("F2 SCANNER", "scanner", C.green)}{Fkey("F3 NEWS", "news", C.red)}{Fkey("F4 MAKRO", "makro", C.blue)}{Fkey("F5 RATIO", "ratio", "#c07af0")}
         <span style={{ color: C.muted, fontSize: 9, marginLeft: 6 }}>EU:</span>
         {EU_PRESETS.slice(0, 8).map((p) => <button key={p.y} onClick={() => loadDetail(p)} title={p.label} style={{ background: "transparent", color: C.blue, border: `1px solid ${C.line}`, fontSize: 9, padding: "2px 6px", cursor: "pointer", fontFamily: mono }}>{p.s}</button>)}
         <span style={{ color: C.muted, fontSize: 9, marginLeft: 6 }}>ASIA:</span>
@@ -772,45 +1000,20 @@ function App() {
         </div>
       )}
 
-      {tab === "vergleich" && (
+      {tab === "ratio" && (
         <div style={{ padding: 8 }}>
-          <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <input value={cmpCmd} onChange={(e) => setCmpCmd(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addCompare()} placeholder="Ticker/Name hinzufügen (z.B. Apple)" style={{ ...inp, width: 280, color: C.white }} />
-            <button onClick={() => addCompare()} disabled={cmpBusy || compare.length >= 6} style={{ background: C.amber, color: "#000", border: "none", padding: "6px 12px", cursor: "pointer", fontFamily: mono, fontWeight: 700, fontSize: 11 }}>{cmpBusy ? "…" : "+ HINZUFÜGEN"}</button>
-            <span style={{ color: C.muted, fontSize: 10 }}>{compare.length}/6</span>
-          </div>
-          <div style={{ background: C.panel, border: `1px solid ${C.line}`, overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead><tr>
-                <th style={{ textAlign: "left", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>SYM</th>
-                <th style={{ textAlign: "left", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}`, whiteSpace: "nowrap" }}>NAME</th>
-                <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>KURS</th>
-                <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>%CHG</th>
-                <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>KGV</th>
-                <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>EPS</th>
-                <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>DIV%</th>
-                <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>BETA</th>
-                <th style={{ textAlign: "right", padding: "6px 8px", color: C.muted, fontSize: 10, borderBottom: `1px solid ${C.amberDim}` }}>MKT CAP</th>
-                <th style={{ borderBottom: `1px solid ${C.amberDim}` }}></th>
-              </tr></thead>
-              <tbody>
-                {compare.map((e, i) => { const d = compareData[keyOf(e)]; const u = (d?.chgPct ?? 0) >= 0;
-                  return <tr key={keyOf(e)} style={{ background: i % 2 ? "#0e0f11" : "transparent" }}>
-                    <td style={{ padding: "6px 8px", color: C.orange, cursor: "pointer" }} onClick={() => loadDetail(e)}>{e.s}</td>
-                    <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{d?.error ? "Fehler" : (d?.name ?? "lädt…")}</td>
-                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{d?.price ?? "—"}</td>
-                    <td style={{ padding: "6px 8px", textAlign: "right", color: u ? C.green : C.red }}>{d?.chgPct != null ? (u ? "+" : "") + d.chgPct + "%" : "—"}</td>
-                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{d?.pe ?? "—"}</td>
-                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{d?.eps ?? "—"}</td>
-                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{d?.divYield ?? "—"}</td>
-                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{d?.beta ?? "—"}</td>
-                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{fmtCap(d?.mktcap)}</td>
-                    <td style={{ padding: "6px 8px" }}><span onClick={() => rmCompare(e)} style={{ color: C.muted, cursor: "pointer" }}>×</span></td>
-                  </tr>; })}
-                {!compare.length && <tr><td colSpan={10} style={{ padding: 24, textAlign: "center", color: C.muted, fontSize: 12 }}>Noch keine Werte zum Vergleich hinzugefügt.</td></tr>}
-              </tbody>
-            </table>
-          </div>
+          {(typeof window.Ratios === "undefined" || typeof window.Peers === "undefined") ? (
+            <div style={{ background: "#1a0808", border: `1px solid ${C.red}`, color: C.red, fontSize: 11, padding: "8px 12px" }}>
+              Kennzahlen-Modul (ratios.js/peers.js) konnte nicht geladen werden.
+            </div>
+          ) : (
+            <RatioPanel
+              ratioTickers={ratioTickers} ratioData={ratioData} ratioView={ratioView} ratioBusy={ratioBusy}
+              ratioAddCmd={ratioAddCmd} setRatioAddCmd={setRatioAddCmd} addRatioPeer={addRatioPeer} rmRatioPeer={rmRatioPeer}
+              openRatio={openRatio} loadDetail={loadDetail} chartCell={chartCell} setChartCell={setChartCell}
+              dupontOpen={dupontOpen} setDupontOpen={setDupontOpen}
+            />
+          )}
         </div>
       )}
     </div>

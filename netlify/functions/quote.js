@@ -2,7 +2,7 @@
 // Yahoo-Finance-Proxy: Chart + quoteSummary (Kennzahlen, Analysten-Empfehlungen,
 // Firmenprofil) WELTWEIT. Mit Cache(90s), Crumb+Cookie, Retry, UA-Rotation.
 
-const { normalizeStatements } = require("./lib/normalizer");
+const { normalizeStatements, isFinancialCompany } = require("./lib/normalizer");
 
 const UAS = [
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
@@ -110,7 +110,7 @@ function shape(data, symbol) {
     high: meta.regularMarketDayHigh != null ? +(+meta.regularMarketDayHigh).toFixed(2) : null,
     low: meta.regularMarketDayLow != null ? +(+meta.regularMarketDayLow).toFixed(2) : null,
     series, mktcap: null, pe: null, eps: null, divYield: null, target: null, description: "", sector: "", industry: "", recos: [],
-    week52Low: null, week52High: null, volume: null, avgVolume: null, beta: null, earningsDate: null, news: [], financials: [], fundamentals: [],
+    week52Low: null, week52High: null, volume: null, avgVolume: null, beta: null, earningsDate: null, news: [], financials: [], fundamentals: [], isFinancial: false,
   };
   out.volume = meta.regularMarketVolume != null ? +meta.regularMarketVolume : null;
 
@@ -161,6 +161,7 @@ function shape(data, symbol) {
     out.target = num(fd.targetMeanPrice); if (out.target != null) out.target = +out.target.toFixed(2);
     out.description = (ap.longBusinessSummary || "").slice(0, 600);
     out.sector = ap.sector || ""; out.industry = ap.industry || "";
+    out.isFinancial = isFinancialCompany(ap.sector, ap.industry);
     out.week52Low = num(sd.fiftyTwoWeekLow); if (out.week52Low != null) out.week52Low = +out.week52Low.toFixed(2);
     out.week52High = num(sd.fiftyTwoWeekHigh); if (out.week52High != null) out.week52High = +out.week52High.toFixed(2);
     out.avgVolume = num(sd.averageVolume) != null ? Math.round(num(sd.averageVolume)) : null;
