@@ -60,16 +60,28 @@ async function fromFredCsv(id, years, timeoutMs) {
   const cosd = new Date(); cosd.setFullYear(cosd.getFullYear() - years);
   const url = `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(id)}&cosd=${cosd.toISOString().slice(0, 10)}`;
   const res = await fetchWithTimeout(url, { headers: BROWSER_HEADERS }, timeoutMs || FRED_CSV_TIMEOUT);
-  if (!res.ok) throw new Error(`FRED HTTP ${res.status}`);
+  if (!res.ok) {
+    let detail = "";
+    try { detail = (await res.text()).slice(0, 150).replace(/\s+/g, " ").trim(); } catch (_) {}
+    throw new Error(`FRED HTTP ${res.status}${detail ? " – " + detail : ""}`);
+  }
   const txt = await res.text();
-  const lines = txt.trim().split("\n");
-  if (lines.length < 3) return null; // Kopfzeile + <2 Datenzeilen -> unbrauchbar
+  // FRED liefert bei Bot-Erkennung eine HTML-Seite MIT Status 200. Ohne diese
+  // Pruefung lief das als "leeres/ungueltiges Ergebnis" durch und man sah nie,
+  // dass in Wahrheit eine Sperrseite zurueckkam.
+  const head = txt.slice(0, 200).trim();
+  if (/^\s*</.test(head)) throw new Error("FRED lieferte HTML statt CSV (vermutlich Bot-Sperre): " + head.replace(/\s+/g, " ").slice(0, 120));
+  // Zeilenenden koennen \r\n sein - sonst haengt am letzten Feld ein \r.
+  const lines = txt.trim().split(/\r?\n/);
+  if (lines.length < 3) throw new Error(`FRED: zu wenige Zeilen (${lines.length}) – Inhalt: ${txt.slice(0, 120).replace(/\s+/g, " ")}`);
   const rows = [];
   for (let i = 1; i < lines.length; i++) {
     const parts = lines[i].split(",");
-    const t = parts[0]; const v = parseFloat(parts[1]);
+    const t = (parts[0] || "").trim(); const v = parseFloat(parts[1]);
+    // Fehlende Werte schreibt FRED als "." - parseFloat ergibt NaN, wird uebersprungen.
     if (t && !isNaN(v)) rows.push({ t, v });
   }
+  if (!rows.length) throw new Error(`FRED: keine verwertbaren Datenzeilen – Kopf: ${lines.slice(0, 2).join(" / ").slice(0, 120)}`);
   return shapeSeries(id, rows);
 }
 
@@ -115,7 +127,12 @@ async function fromDbnomics(id, years, deadline) {
     const timeoutMs = Math.max(MIN_ATTEMPT_MS, Math.min(DBNOMICS_TIMEOUT, remaining));
     try {
       const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": BROWSER_HEADERS["User-Agent"] } }, timeoutMs);
-      if (!res.ok) { lastErr = new Error(`DBnomics HTTP ${res.status}`); continue; }
+      if (!res.ok) {
+        let detail = "";
+        try { detail = (await res.text()).slice(0, 120).replace(/\s+/g, " ").trim(); } catch (_) {}
+        lastErr = new Error(`DBnomics HTTP ${res.status}${detail ? " – " + detail : ""}`);
+        continue;
+      }
       const json = await res.json();
       const obs = findObservations(json, 0);
       if (!obs) { lastErr = new Error("DBnomics: keine period/value-Arrays gefunden"); continue; }
