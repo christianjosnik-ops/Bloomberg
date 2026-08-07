@@ -22,22 +22,28 @@ const { flagEmoji, buildWatchlist } = require("./lib/geo-countries");
 
 const CACHE = new Map(); const TTL = 20 * 60 * 1000; // 20 Min - Weltlage aendert sich nicht sekuendlich
 const WAVE = 5;
-const PER_REQUEST_TIMEOUT = 3500;
-const TOTAL_BUDGET_MS = 7500; // Puffer unter dem 10s-Standardlimit von Netlify Functions
+const PER_REQUEST_TIMEOUT = 3000; // GDELT je Land
+const RELIEFWEB_TIMEOUT = 3000;   // ReliefWeb-Sammelabruf (ein Aufruf fuer alle Laender)
+// Deckt ReliefWeb UND alle GDELT-Wellen ZUSAMMEN ab, mit Sicherheitsabstand
+// unter Netlifys 10s-Standardlimit fuer synchrone Functions. Vorher wurde die
+// Frist erst NACH dem ReliefWeb-Aufruf gesetzt - dadurch konnte die Gesamtlaufzeit
+// (bis zu RELIEFWEB_TIMEOUT + das alte GDELT-Budget) das Funktionslimit reissen,
+// Netlify hat die Function dann hart abgebrochen und der Client sah nur einen
+// generischen Fetch-Fehler ("ReliefWeb nie erreichbar" wirkte wie ein API-Ausfall,
+// war aber ein serverseitiges Timeout).
+const FUNCTION_BUDGET_MS = 8500;
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 // --- ReliefWeb: aktuelle Krisen je Land (ein Aufruf, appname statt Key) -----
-async function fetchReliefWeb() {
-  const url = "https://api.reliefweb.int/v1/disasters"
-    + "?appname=terminal-app-geopolitics"
-    + "&filter[field]=status&filter[value][]=alert&filter[value][]=current"
-    + "&fields[include][]=name&fields[include][]=date.created&fields[include][]=type.name&fields[include][]=country.iso3&fields[include][]=country.iso2&fields[include][]=country.name"
-    + "&sort[]=date.created:desc&limit=100";
-  const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } }, 6000);
-  if (!res.ok) throw new Error(`ReliefWeb HTTP ${res.status}`);
+async function fetchReliefWebOnce(url) {
+  const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } }, RELIEFWEB_TIMEOUT);
+  if (!res.ok) { const err = new Error(`ReliefWeb HTTP ${res.status}`); err.status = res.status; throw err; }
   const json = await res.json();
-  const items = Array.isArray(json && json.data) ? json.data : [];
+  return Array.isArray(json && json.data) ? json.data : [];
+}
+
+function parseReliefWebItems(items) {
   // Pro Land die juengste Meldung behalten (Ergebnis ist bereits nach Datum sortiert)
   const byCountry = new Map();
   for (const item of items) {
@@ -57,6 +63,29 @@ async function fetchReliefWeb() {
     } catch (_) { /* einzelnen kaputten Eintrag ueberspringen, Rest verarbeiten */ }
   }
   return byCountry;
+}
+
+const RELIEFWEB_BASE = "https://api.reliefweb.int/v1/disasters"
+  + "?appname=terminal-app-geopolitics"
+  + "&fields[include][]=name&fields[include][]=date.created&fields[include][]=type.name&fields[include][]=country.iso3&fields[include][]=country.iso2&fields[include][]=country.name"
+  + "&sort[]=date.created:desc&limit=100";
+const RELIEFWEB_FILTERED = RELIEFWEB_BASE + "&filter[field]=status&filter[value][]=alert&filter[value][]=current";
+
+async function fetchReliefWeb() {
+  try {
+    return parseReliefWebItems(await fetchReliefWebOnce(RELIEFWEB_FILTERED));
+  } catch (e) {
+    // Die genauen gueltigen Werte fuer filter[value] bei "status" liessen sich ohne
+    // Netzwerkzugriff in der Entwicklungsumgebung nicht zweifelsfrei verifizieren.
+    // Bei einer klassischen "falsche Anfrage"-Antwort (4xx) auf die ungefilterte,
+    // nach Datum sortierte Abfrage zurueckfallen statt komplett zu scheitern - das
+    // liefert dann zwar auch aeltere/abgeschlossene Krisen mit, ist aber immer noch
+    // besser als "ReliefWeb nie erreichbar" wegen eines einzelnen falschen Filterworts.
+    if (e && e.status >= 400 && e.status < 500) {
+      return parseReliefWebItems(await fetchReliefWebOnce(RELIEFWEB_BASE));
+    }
+    throw e;
+  }
 }
 
 // --- GDELT: Nachrichtenvolumen zu Konflikt-Schlagwoertern je Land ----------
@@ -86,12 +115,14 @@ function computeLevel(gdeltCount, reliefwebActive) {
 }
 
 async function buildReport() {
+  // Ab Funktionsstart, nicht erst nach ReliefWeb - siehe Kommentar bei FUNCTION_BUDGET_MS.
+  const deadline = Date.now() + FUNCTION_BUDGET_MS;
+
   let rwByCountry = new Map(); let rwError = null;
   try { rwByCountry = await fetchReliefWeb(); } catch (e) { rwError = String(e && e.message || e); }
 
   const watchlist = buildWatchlist(Array.from(rwByCountry.values()));
   const out = {};
-  const deadline = Date.now() + TOTAL_BUDGET_MS;
 
   for (let i = 0; i < watchlist.length; i += WAVE) {
     // Nicht nur pruefen ob das Budget JETZT schon ueberschritten ist, sondern ob

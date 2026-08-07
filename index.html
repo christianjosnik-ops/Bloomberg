@@ -1026,11 +1026,36 @@ function App() {
 
   /* Scanner (US) */
   const [scan, setScan] = useState([]); const [scanning, setScanning] = useState(false);
+  const [scProgress, setScProgress] = useState(null); // {done, total} waehrend des Scans
   const [scSec, setScSec] = useState("Alle"); const [scChg, setScChg] = useState(""); const [scSort, setScSort] = useState("chg"); const [scDir, setScDir] = useState(-1);
-  const runScan = async () => { setScanning(true);
-    const rows = await Promise.all(US_UNIVERSE.map(async ([sym, name, sec]) => { try { const q = await fhQuote(sym, fhKey); return { s: sym, name, sector: sec, price: q.c, chg: +(+q.dp).toFixed(2) }; } catch { return { s: sym, name, sector: sec, price: null, chg: null }; } }));
-    setScan(rows); setScanning(false);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Wellenbasiert statt ein Promise.all ueber alle Symbole: Finnhubs kostenloser
+  // Plan begrenzt auf ~60 Aufrufe/Minute. Mit der auf ~60 Werte erweiterten Liste
+  // haette ein einzelner Promise.all fast das ganze Monatsbudget in einer Sekunde
+  // verbraucht - Finnhub antwortet dann mit HTTP 429, was still zu price:null
+  // gefangen wird und wie "Kurse falsch/aendern sich nicht" aussieht. Mit Wellen
+  // von 8 und Pause dazwischen bleibt die Anfragerate darunter.
+  const SCAN_WAVE = 8, SCAN_WAVE_DELAY = 900;
+  const runScan = async () => {
+    setScanning(true); setScProgress({ done: 0, total: US_UNIVERSE.length });
+    const rows = [];
+    for (let i = 0; i < US_UNIVERSE.length; i += SCAN_WAVE) {
+      const wave = US_UNIVERSE.slice(i, i + SCAN_WAVE);
+      const settled = await Promise.all(wave.map(async ([sym, name, sec]) => {
+        try {
+          const q = await jgetTimeout(`${FH}/quote?symbol=${sym}&token=${fhKey}`, 8000);
+          const chg = q && q.dp != null ? +(+q.dp).toFixed(2) : null;
+          return { s: sym, name, sector: sec, price: q ? q.c : null, chg, absChg: chg == null ? null : Math.abs(chg) };
+        } catch { return { s: sym, name, sector: sec, price: null, chg: null, absChg: null }; }
+      }));
+      rows.push(...settled);
+      setScProgress({ done: rows.length, total: US_UNIVERSE.length });
+      if (i + SCAN_WAVE < US_UNIVERSE.length) await sleep(SCAN_WAVE_DELAY);
+    }
+    setScan(rows); setScanning(false); setScProgress(null);
   };
+  // Schnellfilter: setzen nur die Sortierung, die Daten sind schon geladen.
+  const scanPreset = (sort, dir) => { setScSort(sort); setScDir(dir); };
   const scanView = useMemo(() => { let r = scan.filter((x) => (scSec === "Alle" || x.sector === scSec) && (!scChg || (x.chg != null && x.chg >= +scChg))); r.sort((a, b) => ((a[scSort] ?? -9e9) > (b[scSort] ?? -9e9) ? scDir : (a[scSort] ?? -9e9) < (b[scSort] ?? -9e9) ? -scDir : 0)); return r; }, [scan, scSec, scChg, scSort, scDir]);
   const sectorHeat = useMemo(() => {
     const map = {};
@@ -1126,6 +1151,17 @@ function App() {
   const wlTape = useMemo(() => watch.filter((e) => wlQ[keyOf(e)] && wlQ[keyOf(e)].chgPct != null), [watch, wlQ]);
 
   const chartVals = useMemo(() => chart.series.map((s) => s.p), [chart.series]);
+  // Veraenderung ueber den GEWAEHLTEN Zeitraum (erster vs. letzter Punkt der
+  // geladenen Chart-Reihe). d.chgPct kommt dagegen direkt aus der Quote und ist
+  // IMMER die Tagesveraenderung - blieb bisher beim Umschalten auf 1M/6M/1J
+  // unveraendert stehen, obwohl der Chart einen ganz anderen Zeitraum zeigt.
+  const periodChg = useMemo(() => {
+    if (chartVals.length < 2) return null;
+    const first = chartVals[0], last = chartVals[chartVals.length - 1];
+    if (!first) return null;
+    return { abs: +(last - first).toFixed(2), pct: +(((last - first) / first) * 100).toFixed(2) };
+  }, [chartVals]);
+  const chartRangeLabel = (CHART_RANGES.find(([r]) => r === chartRange) || [, chartRange])[1];
   const smaOverlays = useMemo(() => (
     showSMA && chartVals.length > 3
       ? [{ vals: sma(chartVals, 20), color: C.blue }, { vals: sma(chartVals, 50), color: C.amber }]
@@ -1242,7 +1278,7 @@ function App() {
                 <div style={{ display: "flex", alignItems: "flex-end", gap: 12 }}>
                   {d.price != null && <div style={{ textAlign: "right" }}>
                     <div style={{ fontSize: "var(--fs-hero)", color: up ? C.green : C.red, fontWeight: 700, lineHeight: 1.1 }}>{d.price} <span className="muted" style={{ fontWeight: 400 }}>{cur}</span></div>
-                    <div style={{ fontSize: "var(--fs-md)", color: up ? C.green : C.red }}>{up ? "▲ +" : "▼ "}{d.chg} ({up ? "+" : ""}{d.chgPct}%)</div>
+                    <div style={{ fontSize: "var(--fs-md)", color: up ? C.green : C.red }}>{up ? "▲ +" : "▼ "}{d.chg} ({up ? "+" : ""}{d.chgPct}%) <span className="muted" style={{ fontSize: "var(--fs-2xs)" }}>HEUTE</span></div>
                     {d.currency && d.currency !== "EUR" && fxRates[d.currency] != null && <div className="muted" style={{ marginTop: 2 }}>≈ {(d.price * fxRates[d.currency]).toFixed(2)} €</div>}
                   </div>}
                   <button className="btn btn--ghost" onClick={() => addWatch({ s: d.s, y: active.y })}>+WL</button>
@@ -1252,7 +1288,14 @@ function App() {
               {d.partial && <div className="note note--warn" style={{ marginTop: 10 }}>⚠ {d.partial}</div>}
             </Panel>
 
-            <Panel title={`CHART · ${d.s}`} right={<div style={{ display: "flex", gap: 3 }}>{CHART_RANGES.map(([r, l]) => <button key={r} onClick={() => changeChartRange(r)} className={"btn" + (chartRange === r ? " btn--on" : "")}>{l}</button>)}</div>} style={{ marginBottom: 8 }}>
+            <Panel
+              title={<>CHART · {d.s}{periodChg && (
+                <span style={{ color: periodChg.pct >= 0 ? C.green : C.red, marginLeft: 8 }}>
+                  {periodChg.pct >= 0 ? "▲ +" : "▼ "}{periodChg.pct}% <span className="muted" style={{ fontSize: "var(--fs-2xs)" }}>({chartRangeLabel})</span>
+                </span>
+              )}</>}
+              right={<div style={{ display: "flex", gap: 3 }}>{CHART_RANGES.map(([r, l]) => <button key={r} onClick={() => changeChartRange(r)} className={"btn" + (chartRange === r ? " btn--on" : "")}>{l}</button>)}</div>}
+              style={{ marginBottom: 8 }}>
               {chart.ok && chart.series.length > 3 ? (<>
                 <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap" }}>
                   <button onClick={() => setShowSMA((v) => !v)} className={"btn btn--tog" + (showSMA ? " btn--on" : "")}>SMA 20/50</button>
@@ -1311,9 +1354,17 @@ function App() {
           <div className="panel" style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", padding: 12, marginBottom: 8 }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}><span className="stat__k">SEKTOR</span><select className="field" value={scSec} onChange={(e) => setScSec(e.target.value)}>{SECTORS.map((s) => <option key={s} style={{ background: C.panel }}>{s}</option>)}</select></div>
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}><span className="stat__k">%CHG MIN</span><input className="field" value={scChg} onChange={(e) => setScChg(e.target.value)} placeholder="-99" style={{ width: 100 }} /></div>
-            <button className="btn btn--go" onClick={runScan} disabled={scanning}>{scanning ? "SCANNE…" : "▶ MARKT SCANNEN"}</button>
-            <span className="muted">{scan.length ? scanView.length + " Treffer" : "US-Werte · ~30 Aufrufe"}</span>
+            <button className="btn btn--go" onClick={runScan} disabled={scanning}>{scanning ? `SCANNE… (${scProgress ? scProgress.done : 0}/${scProgress ? scProgress.total : US_UNIVERSE.length})` : "▶ MARKT SCANNEN"}</button>
+            <span className="muted">{scan.length ? scanView.length + " Treffer" : `US-Werte · ${US_UNIVERSE.length} Aufrufe`}</span>
           </div>
+          {scan.length > 0 && (
+            <div className="toolbar">
+              <span className="stat__k">SCHNELLFILTER:</span>
+              <button className="btn btn--tog" onClick={() => scanPreset("chg", -1)}>▲ TOP GEWINNER</button>
+              <button className="btn btn--tog" onClick={() => scanPreset("chg", 1)}>▼ TOP VERLIERER</button>
+              <button className="btn btn--tog" onClick={() => scanPreset("absChg", -1)}>◆ GRÖSSTE BEWEGUNG</button>
+            </div>
+          )}
           {sectorHeat.length > 0 && (
             <div className="grid-auto grid-auto--sm" style={{ marginBottom: 8 }}>
               {sectorHeat.map((s) => (
