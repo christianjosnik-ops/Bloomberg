@@ -95,18 +95,32 @@ function parseReliefWebItems(items) {
 //   been decommissioned. Please use version 'v2' instead."}}
 // Deshalb v2 als Hauptpfad. v1 wird NICHT mehr angefragt - ein 410 ist endgueltig
 // und ein weiterer Versuch waere reine Zeitverschwendung.
+// Live-Beleg aus dem Diagnose-Endpunkt: "country.iso2" wurde mit HTTP 400
+// "Unrecognized field 'country.iso2' in parameter 'fields'" abgelehnt - dieses
+// Feld gibt es im ReliefWeb-v2-Schema nicht (nur country.iso3). War der Grund,
+// warum sowohl der gefilterte als auch der ungefilterte Pfad scheiterten -
+// beide enthielten dasselbe ungueltige Feld.
 const RELIEFWEB_FIELDS =
   "&fields[include][]=name&fields[include][]=date.created&fields[include][]=type.name"
-  + "&fields[include][]=country.iso3&fields[include][]=country.iso2&fields[include][]=country.name";
+  + "&fields[include][]=country.iso3&fields[include][]=country.name";
+// Live-Beleg: die feldlose Rueckfallebene (RELIEFWEB_MINIMAL) lieferte HTTP 403
+// "You are not using an approved appname. Kindly request an approved appname
+// here: https://apidoc.reliefweb.int/apidoc" - ReliefWeb v2 verlangt inzwischen
+// einen VORAB REGISTRIERTEN Appnamen (anders als v1, wo ein beliebiger String
+// genuegte). Das ist kein Fehler in unserer Anfrageform, sondern eine externe
+// Registrierung, die kein Code-Fix umgehen kann. Ueber Umgebungsvariable
+// konfigurierbar, damit ein spaeter genehmigter Appname per Netlify-Env ohne
+// Redeploy eingetragen werden kann.
+const RELIEFWEB_APPNAME = process.env.RELIEFWEB_APPNAME || "terminal-app-geopolitics";
 const RELIEFWEB_BASE = "https://api.reliefweb.int/v2/disasters"
-  + "?appname=terminal-app-geopolitics"
+  + "?appname=" + encodeURIComponent(RELIEFWEB_APPNAME)
   + RELIEFWEB_FIELDS
   + "&sort[]=date.created:desc&limit=100";
 // Statuswerte des disasters-Endpunkts: "alert", "ongoing", "past".
 const RELIEFWEB_FILTERED = RELIEFWEB_BASE + "&filter[field]=status&filter[value][]=alert&filter[value][]=ongoing";
 // Ohne fields[include]: falls v2 die Feldauswahl anders benennt, liefert die
 // nackte Abfrage immer noch verwertbare Datensaetze (nur groesser).
-const RELIEFWEB_MINIMAL = "https://api.reliefweb.int/v2/disasters?appname=terminal-app-geopolitics&limit=100";
+const RELIEFWEB_MINIMAL = "https://api.reliefweb.int/v2/disasters?appname=" + encodeURIComponent(RELIEFWEB_APPNAME) + "&limit=100";
 
 async function fetchReliefWeb() {
   const attempts = [];
