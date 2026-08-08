@@ -1,22 +1,30 @@
 // Netlify Function: /.netlify/functions/fred?ids=UNRATE,CPIAUCSL,...  (Batch, 1 Aufruf fuer alle Serien)
 //                    /.netlify/functions/fred?id=UNRATE               (Einzelabruf, Legacy)
 //
-// Makrodaten mit Fallback-Kette (beide Quellen ohne API-Key):
-//   1. FRED CSV-Endpunkt (fredgraph.csv)
-//   2. DBnomics (spiegelt FRED-Serien)
-// Faellt eine Quelle wiederholt aus, wird sie dank Circuit Breaker eine Zeit
-// lang uebersprungen, statt bei jedem Aufruf erneut ins Timeout zu laufen.
+// Makrodaten ausschliesslich ueber den FRED-CSV-Endpunkt (fredgraph.csv), ohne
+// API-Key. Deckt neben US-Serien auch Euro-Raum-Serien ab, weil FRED zahlreiche
+// OECD-/ECB-Reihen unter regulaeren FRED-IDs mitfuehrt (z.B. ECBDFR fuer den
+// EZB-Einlagensatz) - dieselbe Function/Pipeline bedient also beide Regionen,
+// ohne einen zweiten Provider zu integrieren.
 //
-// UNGETESTET: Der DBnomics-Abruf konnte in der Entwicklungsumgebung nicht gegen
-// die echte API geprueft werden (kein Netzwerkzugriff). Das Parsen ist bewusst
-// defensiv - unerwartete Antwortformen fuehren zu null (= naechster Provider
-// bzw. "keine Daten"), nicht zu einem Absturz.
+// FRUEHER gab es hier zusaetzlich DBnomics als Rueckfallebene. Per Live-
+// Diagnose auf der echten Instanz nachweislich tot: beide Pfadformen
+// scheiterten mit "Could not find storage directory for provider 'FRED'" -
+// keine Frage der URL-Form, DBnomics selbst findet die Daten nicht. Entfernt.
+//
+// Faellt der Sammelabruf wiederholt aus, wird er dank Circuit Breaker eine
+// Zeit lang uebersprungen, statt bei jedem Aufruf erneut ins Timeout zu laufen.
 
 const { tryChain, fetchWithTimeout, breakerState } = require("./lib/providers");
 
 const CACHE = new Map(); const TTL = 10 * 60 * 1000; // 10 Min
 // Bekannte Serien: passender Ruecklauf-Zeitraum je nach Frequenz (Tages-/Monats-/Quartalsdaten).
-const DEFAULT_YEARS = { UNRATE: 10, CPIAUCSL: 10, FEDFUNDS: 10, DGS10: 1, T10Y2Y: 1, GDP: 30, PAYEMS: 10, UMCSENT: 10, MORTGAGE30US: 3, M2SL: 10 };
+const DEFAULT_YEARS = {
+  // US
+  UNRATE: 10, CPIAUCSL: 10, FEDFUNDS: 10, DGS10: 1, T10Y2Y: 1, GDP: 30, PAYEMS: 10, UMCSENT: 10, MORTGAGE30US: 3, M2SL: 10,
+  // Euro-Raum (ueber FRED gespiegelte OECD-/EZB-Reihen - siehe MACRO_PRESETS in market-data.js)
+  ECBDFR: 10, EA19CPALTT01GYM: 10, LRHUTTTTEZM156S: 10, IRLTLT01DEM156N: 10,
+};
 
 // Zeitbudget - Hintergrund aus dem Livebetrieb:
 //
@@ -32,7 +40,6 @@ const DEFAULT_YEARS = { UNRATE: 10, CPIAUCSL: 10, FEDFUNDS: 10, DGS10: 1, T10Y2Y
 // Kaskade mehr ausloesen.
 const FRED_BATCH_TIMEOUT = 6000;  // ein Sammelabruf fuer alle Serien
 const FRED_CSV_TIMEOUT = 4000;    // Einzelabruf, nur noch als Rueckfallebene
-const DBNOMICS_TIMEOUT = 2500;
 const FUNCTION_BUDGET_MS = 9000;  // Sicherheitsabstand unter Netlifys 10s-Standardlimit
 const MIN_ATTEMPT_MS = 500;       // unter dieser Restzeit lohnt kein weiterer Versuch mehr
 // Gemeinsames Startdatum fuer den Sammelabruf. Angezeigt werden ohnehin nur die
@@ -146,86 +153,6 @@ async function fromFredCsv(id, years, timeoutMs) {
   return shapeSeries(id, rows);
 }
 
-// --- Provider 2: DBnomics -------------------------------------------------
-// DBnomics spiegelt FRED unter dem Provider-Code "FRED". Die genaue Pfadform
-// (Dataset-Ebene) konnte hier nicht verifiziert werden, deshalb werden zwei
-// plausible Varianten probiert und die Antwort formunabhaengig ausgewertet:
-// gesucht werden schlicht parallele period[]/value[]-Arrays, egal wie tief
-// verschachtelt.
-function findObservations(node, depth) {
-  if (!node || typeof node !== "object" || (depth || 0) > 6) return null;
-  const periods = node.period || node.periods;
-  const values = node.value || node.values;
-  if (Array.isArray(periods) && Array.isArray(values) && periods.length && periods.length === values.length) {
-    return { periods, values };
-  }
-  for (const k of Object.keys(node)) {
-    const child = node[k];
-    if (Array.isArray(child)) {
-      for (const item of child) { const hit = findObservations(item, (depth || 0) + 1); if (hit) return hit; }
-    } else if (child && typeof child === "object") {
-      const hit = findObservations(child, (depth || 0) + 1); if (hit) return hit;
-    }
-  }
-  return null;
-}
-
-async function fromDbnomics(id, years, deadline) {
-  // Aus der Live-Diagnose gelernt: series_ids=FRED/UNRATE (zwei Segmente) wird
-  // mit HTTP 400 abgelehnt - DBnomics erwartet provider/dataset/serie, also
-  // DREI Segmente. Die zweisegmentige Form ist deshalb raus.
-  //
-  // Welcher Dataset-Code fuer die FRED-Spiegelung gilt, laesst sich hier nicht
-  // pruefen (api.db.nomics.world ist aus der Entwicklungsumgebung gesperrt),
-  // deshalb mehrere plausible Formen. Die Diagnose-Function probt dieselben
-  // Varianten einzeln durch und zeigt, welche traegt.
-  const enc = encodeURIComponent(id);
-  const candidates = [
-    `https://api.db.nomics.world/v22/series/FRED/${enc}/${enc}?observations=1`,
-    `https://api.db.nomics.world/v22/series?series_ids=FRED/${enc}/${enc}&observations=1`,
-    // Suchweg: findet die Serie ueber den Provider, ohne den Dataset-Code zu kennen.
-    `https://api.db.nomics.world/v22/search?q=${enc}&provider_code=FRED&observations=1&limit=1`,
-  ];
-  let lastErr = null;
-  for (const url of candidates) {
-    // Gemeinsames Zeitbudget respektieren: ohne genug Restzeit lohnt kein
-    // weiterer Kandidat mehr - lieber sauber als "keine Zeit mehr" scheitern,
-    // statt das Gesamtbudget aller Serien/Wellen zu reissen.
-    const remaining = deadline ? timeLeft(deadline) : DBNOMICS_TIMEOUT;
-    if (remaining < MIN_ATTEMPT_MS) { lastErr = lastErr || new Error("Zeitbudget erreicht"); break; }
-    const timeoutMs = Math.max(MIN_ATTEMPT_MS, Math.min(DBNOMICS_TIMEOUT, remaining));
-    try {
-      const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": BROWSER_HEADERS["User-Agent"] } }, timeoutMs);
-      if (!res.ok) {
-        let detail = "";
-        try { detail = (await res.text()).slice(0, 120).replace(/\s+/g, " ").trim(); } catch (_) {}
-        lastErr = new Error(`DBnomics HTTP ${res.status}${detail ? " – " + detail : ""}`);
-        continue;
-      }
-      const json = await res.json();
-      const obs = findObservations(json, 0);
-      if (!obs) { lastErr = new Error("DBnomics: keine period/value-Arrays gefunden"); continue; }
-      const cutoff = new Date(); cutoff.setFullYear(cutoff.getFullYear() - years);
-      const cutoffStr = cutoff.toISOString().slice(0, 10);
-      const rows = [];
-      for (let i = 0; i < obs.periods.length; i++) {
-        const t = String(obs.periods[i]); const v = parseFloat(obs.values[i]);
-        if (t && !isNaN(v) && t >= cutoffStr) rows.push({ t, v });
-      }
-      const shaped = shapeSeries(id, rows);
-      if (shaped) return shaped;
-      lastErr = new Error("DBnomics: keine verwertbaren Datenpunkte");
-    } catch (e) {
-      lastErr = e;
-      // Timeout = Host nicht erreichbar. Die zweite Pfadvariante wuerde nur ein
-      // weiteres Timeout kosten - nur bei echten HTTP-/Formatfehlern lohnt sie.
-      if (e && e.isTimeout) break;
-    }
-  }
-  if (lastErr) throw lastErr;
-  return null;
-}
-
 async function fetchOne(id, yearsIn, deadline) {
   const years = Math.min(50, Math.max(1, parseInt(yearsIn || DEFAULT_YEARS[id] || 10, 10) || 10));
   const cacheKey = `${id}:${years}`;
@@ -239,7 +166,6 @@ async function fetchOne(id, yearsIn, deadline) {
 
   const result = await tryChain([
     { name: "fred", run: () => fromFredCsv(id, years, deadline ? Math.max(MIN_ATTEMPT_MS, Math.min(FRED_CSV_TIMEOUT, timeLeft(deadline))) : FRED_CSV_TIMEOUT) },
-    { name: "dbnomics", run: () => fromDbnomics(id, years, deadline) },
   ]);
 
   if (!result.data) {
@@ -330,4 +256,4 @@ exports.handler = async (event) => {
 };
 
 // Fuer Tests: Einzelfunktionen ohne HTTP-Handler-Wrapper zugaenglich machen.
-exports._internal = { fetchOne, fromFredCsv, fromFredCsvBatch, fromDbnomics, shapeSeries, findObservations, FUNCTION_BUDGET_MS, MIN_ATTEMPT_MS, BATCH_YEARS };
+exports._internal = { fetchOne, fromFredCsv, fromFredCsvBatch, shapeSeries, FUNCTION_BUDGET_MS, MIN_ATTEMPT_MS, BATCH_YEARS };
