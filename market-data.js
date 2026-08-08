@@ -29,7 +29,7 @@
     { s: "SAMSUNG", y: "005930.KS", label: "Samsung" }, { s: "TENCENT", y: "0700.HK", label: "Tencent" },
     { s: "ALIBABA", y: "9988.HK", label: "Alibaba HK" }, { s: "TSMC-TW", y: "2330.TW", label: "TSMC Taiwan" },
   ];
-  const MACRO_PRESETS = [
+  const US_MACRO_PRESETS = [
     { id: "UNRATE", label: "Arbeitslosenquote", unit: "%" },
     { id: "CPIAUCSL", label: "Verbraucherpreise (CPI)", unit: "Index" },
     { id: "FEDFUNDS", label: "Fed Funds Rate", unit: "%" },
@@ -41,6 +41,20 @@
     { id: "MORTGAGE30US", label: "Hypothekenzins 30J", unit: "%" },
     { id: "M2SL", label: "Geldmenge M2", unit: "Mrd $" },
   ];
+  // Euro-Raum ueber FRED gespiegelte OECD-/EZB-Reihen - kein zweiter Provider,
+  // dieselbe fredgraph.csv-Sammelabruf-Pipeline wie die US-Serien oben.
+  // Die genauen Serien-IDs sind plausibel, aber ungetestet (kein Netzwerkzugriff
+  // in der Entwicklungsumgebung) - der Diagnose-Endpunkt (Probe "fred-csv-euro")
+  // zeigt nach dem Deploy, welche davon tatsaechlich existieren. Der Sammelabruf
+  // ist defensiv: fehlt eine ID in der FRED-Antwort, bleibt nur diese eine
+  // Kachel leer, der Rest funktioniert unabhaengig davon weiter.
+  const EURO_MACRO_PRESETS = [
+    { id: "ECBDFR", label: "EZB-Einlagensatz", unit: "%" },
+    { id: "EA19CPALTT01GYM", label: "Euro-Inflation (HVPI)", unit: "%" },
+    { id: "LRHUTTTTEZM156S", label: "Euro-Arbeitslosenquote", unit: "%" },
+    { id: "IRLTLT01DEM156N", label: "Bund-Rendite 10J", unit: "%" },
+  ];
+  const MACRO_PRESETS = [...US_MACRO_PRESETS, ...EURO_MACRO_PRESETS];
   const INDEX_PRESETS = [
     { s: "SPX", y: "^GSPC", label: "S&P 500" }, { s: "NDX", y: "^IXIC", label: "Nasdaq" },
     { s: "DJI", y: "^DJI", label: "Dow Jones" }, { s: "VIX", y: "^VIX", label: "VIX" },
@@ -200,7 +214,7 @@
   }
 
   return {
-    EU_PRESETS, ASIA_PRESETS, MACRO_PRESETS, INDEX_PRESETS, US_UNIVERSE, US_NAME, SECTORS,
+    EU_PRESETS, ASIA_PRESETS, MACRO_PRESETS, US_MACRO_PRESETS, EURO_MACRO_PRESETS, INDEX_PRESETS, US_UNIVERSE, US_NAME, SECTORS,
     FH, TD, YF, FRED_FN,
     jget, jgetTimeout, keyOf, fredGetBatch,
     fhQuote, tdQuote, tdSeries, yfGet, searchSymbol, localPresetMatch, resolveSymbol,

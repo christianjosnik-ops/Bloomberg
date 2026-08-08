@@ -5,12 +5,12 @@
 // Auszug des Antwortkoerpers.
 //
 // Warum es das gibt: Die Entwicklungsumgebung erreicht fred.stlouisfed.org,
-// api.reliefweb.int, api.db.nomics.world und ucdpapi.pcr.uu.se nicht (Egress-
-// Richtlinie blockt CONNECT mit 403). Fehler wie "ReliefWeb nicht erreichbar"
-// lassen sich von dort also nicht nachstellen. Diese Function laeuft dagegen
-// auf Netlify, wo die echten Aufrufe stattfinden - ihr Ergebnis zeigt den
-// konkreten Grund (falscher Filterwert, Bot-Sperre, geaenderter Pfad,
-// Zeitueberschreitung...) statt nur "hat nicht geklappt".
+// api.reliefweb.int und ucdpapi.pcr.uu.se nicht (Egress-Richtlinie blockt
+// CONNECT mit 403). Fehler wie "ReliefWeb nicht erreichbar" lassen sich von
+// dort also nicht nachstellen. Diese Function laeuft dagegen auf Netlify, wo
+// die echten Aufrufe stattfinden - ihr Ergebnis zeigt den konkreten Grund
+// (falscher Filterwert, Bot-Sperre, geaenderter Pfad, Zeitueberschreitung...)
+// statt nur "hat nicht geklappt".
 //
 // Aufruf:  /.netlify/functions/diag           (alle Quellen)
 //          /.netlify/functions/diag?only=reliefweb
@@ -74,31 +74,19 @@ const PROBES = [
     },
   },
   {
-    key: "dbnomics-pfad-3seg",
-    label: "DBnomics Kandidat 1 (Pfad, 3 Segmente)",
-    url: "https://api.db.nomics.world/v22/series/FRED/UNRATE/UNRATE?observations=1",
-    headers: { "Accept": "application/json", "User-Agent": UA },
-  },
-  {
-    key: "dbnomics-ids-3seg",
-    label: "DBnomics Kandidat 2 (series_ids, 3 Segmente)",
-    url: "https://api.db.nomics.world/v22/series?series_ids=FRED/UNRATE/UNRATE&observations=1",
-    headers: { "Accept": "application/json", "User-Agent": UA },
-  },
-  {
-    // Beleg-Probe: genau diese Form lieferte im Livebetrieb HTTP 400
-    // ("series_ids":["FRED/UNRATE"]). Bleibt drin, um den Befund festzuhalten.
-    key: "dbnomics-ids-2seg-ungueltig",
-    label: "DBnomics mit 2 Segmenten (ungültig – erwartet HTTP 400)",
-    url: "https://api.db.nomics.world/v22/series?series_ids=FRED/UNRATE&observations=1",
-    headers: { "Accept": "application/json", "User-Agent": UA },
-    expectStatus: 400,
-  },
-  {
-    key: "dbnomics-suche",
-    label: "DBnomics Kandidat 3 (Suche über den Provider)",
-    url: "https://api.db.nomics.world/v22/search?q=UNRATE&provider_code=FRED&observations=1&limit=1",
-    headers: { "Accept": "application/json", "User-Agent": UA },
+    // Euro-Raum-Serien laufen ueber denselben FRED-Sammelabruf wie die
+    // US-Serien (FRED spiegelt OECD-/EZB-Reihen unter regulaeren FRED-IDs) -
+    // kein zweiter Provider noetig. Die exakten Serien-IDs sind plausibel,
+    // aber ungetestet; diese Probe zeigt, welche davon tatsaechlich existieren.
+    key: "fred-csv-euro",
+    label: "FRED CSV Euro-Raum (EZB-Einlagensatz, HVPI, Arbeitslosenquote, Bund-Rendite)",
+    url: "https://fred.stlouisfed.org/graph/fredgraph.csv?id=ECBDFR,EA19CPALTT01GYM,LRHUTTTTEZM156S,IRLTLT01DEM156N&cosd=2014-01-01",
+    headers: { "User-Agent": UA, "Accept": "text/csv,text/plain,*/*", "Accept-Language": "en-US,en;q=0.9", "Referer": "https://fred.stlouisfed.org/" },
+    expect: (body) => {
+      const head = (body.split(/\r?\n/)[0] || "").toUpperCase();
+      const fehlend = ["ECBDFR", "EA19CPALTT01GYM", "LRHUTTTTEZM156S", "IRLTLT01DEM156N"].filter((id) => !head.includes(id));
+      return fehlend.length ? "Kopfzeile enthaelt diese Serien-IDs nicht (existieren evtl. unter anderem Code): " + fehlend.join(", ") : null;
+    },
   },
   {
     // UCDP ist seit dem Appname-Befund (siehe reliefweb-v2-minimal weiter
@@ -146,33 +134,6 @@ const PROBES = [
     label: "ReliefWeb v2 ohne Feldauswahl (Rueckfallebene 2)",
     url: "https://api.reliefweb.int/v2/disasters?appname=" + encodeURIComponent(RELIEFWEB_APPNAME) + "&limit=5",
     headers: { "Accept": "application/json", "User-Agent": UA },
-  },
-  {
-    // Beleg-Probe fuer DBnomics: zeigt, ob 'FRED' ueberhaupt (noch) als
-    // Provider im Katalog steht. Die Kandidaten 1+2 scheiterten beide mit
-    // "Could not find storage directory for provider 'FRED'" - das ist KEIN
-    // Formatfehler unserer URL (der Provider-Code wird korrekt erkannt),
-    // sondern DBnomics selbst findet die hinterlegten Daten fuer FRED nicht.
-    // Diese Probe unterscheidet "Provider fehlt im Katalog komplett" von
-    // "Provider bekannt, aber Datenspeicher gerade nicht verfuegbar".
-    key: "dbnomics-providers",
-    label: "DBnomics Katalog (Beleg: steht 'FRED' ueberhaupt in der Providerliste?)",
-    url: "https://api.db.nomics.world/v22/providers?limit=1000",
-    headers: { "Accept": "application/json", "User-Agent": UA },
-    expect: (body) => {
-      try {
-        const j = JSON.parse(body);
-        const list = (j && j.providers && (j.providers.docs || j.providers)) || j.docs || [];
-        const codes = (Array.isArray(list) ? list : []).map((p) => p && (p.code || p.provider_code)).filter(Boolean);
-        if (!codes.length) return "konnte keine Provider-Codes aus der Antwort lesen";
-        const hasFred = codes.some((c) => String(c).toUpperCase() === "FRED");
-        if (!hasFred) {
-          const aehnlich = codes.filter((c) => /fed|fred/i.test(String(c)));
-          return "Provider 'FRED' NICHT in der Katalogliste" + (aehnlich.length ? " – aehnliche Codes: " + aehnlich.join(", ") : " (keine aehnlichen Codes gefunden)");
-        }
-        return null;
-      } catch (e) { return "Antwort konnte nicht als Providerliste geparst werden: " + String(e && e.message || e); }
-    },
   },
   {
     key: "gdelt",

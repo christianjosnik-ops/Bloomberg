@@ -131,22 +131,18 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     console.log("Block 8/9 (abweichender Status wird als Abweichung gemeldet): OK");
   }
 
-  // --- DBnomics-Katalogprobe: unterscheidet "Provider fehlt" von "Provider da,
-  //     aber Speicher aktuell nicht verfuegbar" (Live-Befund: beide DBnomics-
-  //     Kandidaten scheiterten mit "Could not find storage directory for
-  //     provider 'FRED'" - kein URL-Formfehler, sondern eine Aussage ueber den
-  //     Provider selbst) ---
+  // --- Euro-Raum-Makro-Probe: prueft, welche der vermuteten FRED-Serien-IDs
+  //     fuer die EZB-/OECD-Reihen tatsaechlich existieren ---
   {
     const { PROBES } = fresh()._internal;
-    const p = PROBES.find((x) => x.key === "dbnomics-providers");
-    assert.ok(p, "die Katalog-Beleg-Probe muss existieren");
-    assert.strictEqual(p.expect(JSON.stringify({ providers: { docs: [{ code: "FRED" }, { code: "IMF" }] } })), null,
-      "steht FRED im Katalog, darf keine Warnung entstehen");
-    const warnFehlt = p.expect(JSON.stringify({ providers: { docs: [{ code: "FED" }, { code: "IMF" }] } }));
-    assert.ok(warnFehlt && /FRED.*NICHT/.test(warnFehlt) && /FED/.test(warnFehlt),
-      "fehlt FRED, muss das UND ein aehnlicher Code (hier: FED) gemeldet werden");
-    assert.ok(p.expect("kein-json"), "kaputte Antwort muss ebenfalls eine Warnung ergeben, nicht schweigend durchgehen");
-    console.log("Block 9/9a (DBnomics-Katalogprobe unterscheidet fehlenden Provider von leerer Antwort): OK");
+    const p = PROBES.find((x) => x.key === "fred-csv-euro");
+    assert.ok(p, "die Euro-Raum-Makro-Probe muss existieren");
+    assert.strictEqual(p.expect("DATE,ECBDFR,EA19CPALTT01GYM,LRHUTTTTEZM156S,IRLTLT01DEM156N\n2026-01-01,3.75,2.4,6.4,2.51"), null,
+      "stehen alle vier IDs in der Kopfzeile, darf keine Warnung entstehen");
+    const warnFehlt = p.expect("DATE,ECBDFR\n2026-01-01,3.75");
+    assert.ok(warnFehlt && /EA19CPALTT01GYM/.test(warnFehlt) && /LRHUTTTTEZM156S/.test(warnFehlt) && /IRLTLT01DEM156N/.test(warnFehlt),
+      "fehlende Serien-IDs muessen einzeln benannt werden, damit klar ist, welche vermutete ID falsch war");
+    console.log("Block 9/9a (Euro-Raum-Makro-Probe benennt fehlende Serien-IDs einzeln): OK");
   }
 
   // --- Appname per Umgebungsvariable: Live-Befund HTTP 403 "not using an
