@@ -5,12 +5,12 @@
 // Auszug des Antwortkoerpers.
 //
 // Warum es das gibt: Die Entwicklungsumgebung erreicht fred.stlouisfed.org,
-// api.reliefweb.int und api.db.nomics.world nicht (Egress-Richtlinie blockt
-// CONNECT mit 403). Fehler wie "ReliefWeb nicht erreichbar" lassen sich von
-// dort also nicht nachstellen. Diese Function laeuft dagegen auf Netlify, wo
-// die echten Aufrufe stattfinden - ihr Ergebnis zeigt den konkreten Grund
-// (falscher Filterwert, Bot-Sperre, geaenderter Pfad, Zeitueberschreitung...)
-// statt nur "hat nicht geklappt".
+// api.reliefweb.int, api.db.nomics.world und ucdpapi.pcr.uu.se nicht (Egress-
+// Richtlinie blockt CONNECT mit 403). Fehler wie "ReliefWeb nicht erreichbar"
+// lassen sich von dort also nicht nachstellen. Diese Function laeuft dagegen
+// auf Netlify, wo die echten Aufrufe stattfinden - ihr Ergebnis zeigt den
+// konkreten Grund (falscher Filterwert, Bot-Sperre, geaenderter Pfad,
+// Zeitueberschreitung...) statt nur "hat nicht geklappt".
 //
 // Aufruf:  /.netlify/functions/diag           (alle Quellen)
 //          /.netlify/functions/diag?only=reliefweb
@@ -98,6 +98,25 @@ const PROBES = [
     key: "dbnomics-suche",
     label: "DBnomics Kandidat 3 (Suche über den Provider)",
     url: "https://api.db.nomics.world/v22/search?q=UNRATE&provider_code=FRED&observations=1&limit=1",
+    headers: { "Accept": "application/json", "User-Agent": UA },
+  },
+  {
+    // UCDP ist seit dem Appname-Befund (siehe reliefweb-v2-minimal weiter
+    // unten) die Hauptquelle fuer die dynamische Laenderliste in F6 WELTLAGE.
+    // Kandidat 1: woechentlich aktualisierte, noch nicht endgueltig gepruefte
+    // Ereignisse. Pfad-/Versionsschema ungetestet - reine Erreichbarkeits-
+    // und Formpruefung.
+    key: "ucdp-candidateevents",
+    label: "UCDP Kandidat 1 (Candidate Events, woechentlich aktualisiert)",
+    url: "https://ucdpapi.pcr.uu.se/api/candidateevents/24.01.24?pagesize=5&page=0",
+    headers: { "Accept": "application/json", "User-Agent": UA },
+  },
+  {
+    // Kandidat 2: jaehrlich veroeffentlichter, endgueltig gepruefter Datensatz
+    // (Georeferenced Event Dataset) - traeger, aber stabileres Schema.
+    key: "ucdp-gedevents",
+    label: "UCDP Kandidat 2 (Georeferenced Event Dataset, jaehrlich)",
+    url: "https://ucdpapi.pcr.uu.se/api/gedevents/24.1?pagesize=5&page=0",
     headers: { "Accept": "application/json", "User-Agent": UA },
   },
   {

@@ -171,5 +171,14 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     console.log("Block 9/9b (Appname konfigurierbar, country.iso2 dauerhaft entfernt): OK");
   }
 
+  // --- UCDP: die neue Hauptquelle fuer F6 hat eigene Beleg-Proben ---
+  {
+    const res = await fresh().handler({ httpMethod: "GET", queryStringParameters: { only: "ucdp" } });
+    const body = JSON.parse(res.body);
+    assert.strictEqual(body.proben.length, 2, "only=ucdp muss beide UCDP-Kandidaten auswaehlen (Candidate Events + GED)");
+    assert.ok(body.proben.some((p) => p.key === "ucdp-candidateevents") && body.proben.some((p) => p.key === "ucdp-gedevents"));
+    console.log("Block 10/10 (UCDP-Beleg-Proben vorhanden und ueber only=ucdp filterbar): OK");
+  }
+
   console.log("\nAlle diag.js-Tests erfolgreich.");
 })().catch((e) => { console.error("FEHLGESCHLAGEN:", e.message, "\n" + e.stack); process.exit(1); });
