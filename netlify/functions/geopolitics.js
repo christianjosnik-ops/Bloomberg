@@ -282,19 +282,75 @@ async function fetchReliefWeb() {
 
 // --- GDELT: Nachrichtenvolumen zu Konflikt-Schlagwoertern je Land ----------
 const CONFLICT_KEYWORDS = "(war OR conflict OR military OR clashes OR offensive OR strikes OR ceasefire OR attack)";
+const GDELT_HEADLINES_TIMESPAN = "7d";  // vorher 3d - mehr Kontext, nicht nur die letzten 72h
+const GDELT_MAXRECORDS = 25;            // vorher 10 - genauere Artikelanzahl fuer die Risikostufe
+const GDELT_HEADLINES_SHOWN = 8;        // vorher 3 - mehr Schlagzeilen im Detailpanel
+const GDELT_TIMELINE_TIMESPAN = "2w";   // eigener, laengerer Zeitraum fuer den Trendverlauf
+
+// Sucht rekursiv nach dem Array der Zeitreihenpunkte (Datum+Wert), unabhaengig
+// vom Antwort-Umschlag - gleiche Taktik wie bei UCDP/DBnomics, da die genaue
+// Form der GDELT-Timeline-Antwort hier nicht live geprueft werden konnte.
+// Erkennungsmerkmal "date"+"value" grenzt sauber gegen die Artikel-Antwort ab
+// (die hat "title"/"url", keine "date"/"value"-Paare).
+function findGdeltTimelineData(node, depth) {
+  if (Array.isArray(node)) {
+    if (node.length && node.every((x) => x && typeof x === "object" && "date" in x && "value" in x)) return node;
+    for (const item of node) { const hit = findGdeltTimelineData(item, (depth || 0) + 1); if (hit) return hit; }
+    return null;
+  }
+  if (!node || typeof node !== "object" || (depth || 0) > 4) return null;
+  for (const k of Object.keys(node)) { const hit = findGdeltTimelineData(node[k], (depth || 0) + 1); if (hit) return hit; }
+  return null;
+}
+
+// Artikelvolumen als Zeitreihe (mode=timelinevol) - zeigt, ob sich eine Lage
+// gerade zuspitzt oder abklingt, statt nur eine Momentaufnahme zu liefern.
+// Best-effort: schlaegt diese Abfrage fehl, bekommt das Land trotzdem seine
+// Schlagzeilen (siehe fetchGdeltFor) - ein leerer Trend ist kein Grund, die
+// ganze Laenderauswertung scheitern zu lassen.
+async function fetchGdeltTimelineFor(country) {
+  const q = `"${country.name}" ${CONFLICT_KEYWORDS}`;
+  const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&mode=timelinevol&format=json&timespan=${GDELT_TIMELINE_TIMESPAN}`;
+  const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } }, PER_REQUEST_TIMEOUT);
+  if (!res.ok) throw new Error(`GDELT-Timeline HTTP ${res.status}`);
+  const json = await res.json();
+  const points = findGdeltTimelineData(json, 0);
+  if (!points) return [];
+  return points
+    .map((p) => ({ date: String(p.date || "").slice(0, 8), value: typeof p.value === "number" ? p.value : parseFloat(p.value) }))
+    .filter((p) => p.date && !isNaN(p.value));
+}
+
 async function fetchGdeltFor(country) {
   const q = `"${country.name}" ${CONFLICT_KEYWORDS}`;
-  const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&mode=artlist&maxrecords=10&timespan=3d&format=json&sort=datedesc`;
-  const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } }, PER_REQUEST_TIMEOUT);
-  if (!res.ok) throw new Error(`GDELT HTTP ${res.status}`);
-  const json = await res.json();
-  const articles = (Array.isArray(json && json.articles) ? json.articles : []).filter((a) => a && a.title && a.url);
-  // count = tatsaechliches Artikelvolumen (fuer die Risikostufe), headlines =
-  // nur die ersten 3 zur Anzeige - beide bewusst getrennt, damit das Kappen
-  // der Anzeige nicht versehentlich auch die Score-Berechnung deckelt.
+  const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&mode=artlist&maxrecords=${GDELT_MAXRECORDS}&timespan=${GDELT_HEADLINES_TIMESPAN}&format=json&sort=datedesc`;
+
+  // Artikelliste UND Trendverlauf gleichzeitig abrufen (nicht nacheinander) -
+  // beide teilen sich PER_REQUEST_TIMEOUT, damit sich die Laufzeit je Land
+  // durch die zweite Abfrage nicht verdoppelt. Der Trend ist best-effort
+  // (allSettled), die Artikelliste bleibt wie bisher hart (wirft bei Fehler).
+  const [articlesResult, timelineResult] = await Promise.allSettled([
+    (async () => {
+      const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } }, PER_REQUEST_TIMEOUT);
+      if (!res.ok) throw new Error(`GDELT HTTP ${res.status}`);
+      const json = await res.json();
+      const articles = (Array.isArray(json && json.articles) ? json.articles : []).filter((a) => a && a.title && a.url);
+      // count = tatsaechliches Artikelvolumen (fuer die Risikostufe), headlines =
+      // nur die ersten GDELT_HEADLINES_SHOWN zur Anzeige - beide bewusst getrennt,
+      // damit das Kappen der Anzeige nicht versehentlich auch die Score-Berechnung deckelt.
+      return {
+        count: articles.length,
+        headlines: articles.slice(0, GDELT_HEADLINES_SHOWN).map((a) => ({ title: a.title, url: a.url, date: a.seendate ? String(a.seendate).slice(0, 8) : null, source: a.domain || "" })),
+      };
+    })(),
+    fetchGdeltTimelineFor(country),
+  ]);
+
+  if (articlesResult.status === "rejected") throw articlesResult.reason;
   return {
-    count: articles.length,
-    headlines: articles.slice(0, 3).map((a) => ({ title: a.title, url: a.url, date: a.seendate ? String(a.seendate).slice(0, 8) : null, source: a.domain || "" })),
+    count: articlesResult.value.count,
+    headlines: articlesResult.value.headlines,
+    trend: timelineResult.status === "fulfilled" ? timelineResult.value : [],
   };
 }
 
@@ -373,7 +429,7 @@ function baseEntry(c, dyn, gdelt, error) {
     iso3: c.iso3, iso2: c.iso2 || (dyn && dyn.iso2) || null, name: c.name || (dyn && dyn.name) || c.iso3,
     flag: flagEmoji(c.iso2 || (dyn && dyn.iso2)),
     level: gdelt === null && error ? "nicht geprüft" : computeLevel(gdeltCount, ucdpActive || reliefwebActive),
-    gdeltCount, headlines: gdelt ? gdelt.headlines : [],
+    gdeltCount, headlines: gdelt ? gdelt.headlines : [], gdeltTrend: gdelt ? gdelt.trend : [],
     ucdpActive, ucdpType: dyn ? dyn.ucdpType : null, ucdpDate: dyn ? dyn.ucdpDate : null,
     reliefwebActive, reliefwebType: dyn ? dyn.reliefwebType : null, reliefwebHeadline: dyn ? dyn.reliefwebHeadline : null, reliefwebDate: dyn ? dyn.reliefwebDate : null,
     error: error || null,
@@ -398,4 +454,4 @@ exports.handler = async (event) => {
 };
 
 // Fuer Tests: Einzelfunktionen ohne HTTP-Handler-Wrapper zugaenglich machen.
-exports._internal = { computeLevel, baseEntry, buildReport, ucdpLookupCountry, findUcdpEvents, fetchUcdp };
+exports._internal = { computeLevel, baseEntry, buildReport, ucdpLookupCountry, findUcdpEvents, fetchUcdp, findGdeltTimelineData };

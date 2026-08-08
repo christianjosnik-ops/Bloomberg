@@ -177,7 +177,20 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const body = JSON.parse(res.body);
     assert.strictEqual(body.proben.length, 2, "only=ucdp muss beide UCDP-Kandidaten auswaehlen (Candidate Events + GED)");
     assert.ok(body.proben.some((p) => p.key === "ucdp-candidateevents") && body.proben.some((p) => p.key === "ucdp-gedevents"));
-    console.log("Block 10/10 (UCDP-Beleg-Proben vorhanden und ueber only=ucdp filterbar): OK");
+    console.log("Block 10/11 (UCDP-Beleg-Proben vorhanden und ueber only=ucdp filterbar): OK");
+  }
+
+  // --- GDELT-Timeline-Probe: erkennt eine date/value-Zeitreihe im Antwortkoerper ---
+  {
+    const { PROBES } = fresh()._internal;
+    const p = PROBES.find((x) => x.key === "gdelt-timeline");
+    assert.ok(p, "die GDELT-Timeline-Beleg-Probe muss existieren");
+    assert.strictEqual(p.expect(JSON.stringify({ timeline: [{ series: "x", data: [{ date: "20260801000000", value: 1.2 }] }] })), null,
+      "eine erkennbare Zeitreihe darf keine Warnung ergeben");
+    assert.ok(p.expect(JSON.stringify({ articles: [{ title: "x", url: "https://x" }] })),
+      "eine Artikel-Antwort ohne date/value muss als fehlende Zeitreihe auffallen");
+    assert.ok(p.expect("kein-json"), "kaputte Antwort muss ebenfalls eine Warnung ergeben");
+    console.log("Block 11/11 (GDELT-Timeline-Probe erkennt die Zeitreihe, faellt sonst auf): OK");
   }
 
   console.log("\nAlle diag.js-Tests erfolgreich.");
