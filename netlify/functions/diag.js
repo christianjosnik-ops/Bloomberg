@@ -176,9 +176,29 @@ const PROBES = [
   },
   {
     key: "gdelt",
-    label: "GDELT (Weltlage, Nachrichtenvolumen)",
-    url: "https://api.gdeltproject.org/api/v2/doc/doc?query=" + encodeURIComponent('"Sudan" (war OR conflict)') + "&mode=artlist&maxrecords=3&timespan=3d&format=json&sort=datedesc",
+    label: "GDELT (Weltlage, Nachrichtenvolumen – Hauptpfad mit 7-Tage-Fenster)",
+    url: "https://api.gdeltproject.org/api/v2/doc/doc?query=" + encodeURIComponent('"Sudan" (war OR conflict)') + "&mode=artlist&maxrecords=25&timespan=7d&format=json&sort=datedesc",
     headers: { "Accept": "application/json", "User-Agent": UA },
+  },
+  {
+    // Beleg-Probe fuer den neuen Trendverlauf (mode=timelinevol). Antwortform
+    // ungetestet - expect() prueft, ob eine date/value-Zeitreihe erkennbar ist.
+    key: "gdelt-timeline",
+    label: "GDELT Timeline (Trendverlauf, mode=timelinevol)",
+    url: "https://api.gdeltproject.org/api/v2/doc/doc?query=" + encodeURIComponent('"Sudan" (war OR conflict)') + "&mode=timelinevol&format=json&timespan=2w",
+    headers: { "Accept": "application/json", "User-Agent": UA },
+    expect: (body) => {
+      try {
+        const j = JSON.parse(body);
+        const found = (function find(node, depth) {
+          if (Array.isArray(node)) return node.length && node.every((x) => x && typeof x === "object" && "date" in x && "value" in x) ? node : node.map((n) => find(n, (depth || 0) + 1)).find(Boolean) || null;
+          if (!node || typeof node !== "object" || (depth || 0) > 4) return null;
+          for (const k of Object.keys(node)) { const hit = find(node[k], (depth || 0) + 1); if (hit) return hit; }
+          return null;
+        })(j, 0);
+        return found ? null : "keine date/value-Zeitreihe in der Antwort gefunden";
+      } catch (e) { return "Antwort konnte nicht als JSON gelesen werden: " + String(e && e.message || e); }
+    },
   },
   {
     key: "yahoo",
