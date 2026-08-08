@@ -28,10 +28,10 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 // Aus fred.js/geopolitics.js gespiegelt, damit die Diagnose GENAU die URLs
 // prueft, die im Betrieb verwendet werden. Weichen die Dateien auseinander,
 // diagnostiziert man sonst etwas anderes als das, was tatsaechlich laeuft.
-const RELIEFWEB_BASE = "https://api.reliefweb.int/v1/disasters"
-  + "?appname=terminal-app-geopolitics"
-  + "&fields[include][]=name&fields[include][]=date.created&fields[include][]=type.name&fields[include][]=country.iso3&fields[include][]=country.iso2&fields[include][]=country.name"
-  + "&sort[]=date.created:desc&limit=5";
+const RW_FIELDS = "&fields[include][]=name&fields[include][]=date.created&fields[include][]=type.name"
+  + "&fields[include][]=country.iso3&fields[include][]=country.iso2&fields[include][]=country.name";
+const RELIEFWEB_BASE = "https://api.reliefweb.int/v2/disasters"
+  + "?appname=terminal-app-geopolitics" + RW_FIELDS + "&sort[]=date.created:desc&limit=5";
 
 const PROBES = [
   {
@@ -61,21 +61,31 @@ const PROBES = [
     headers: { "Accept": "application/json", "User-Agent": UA },
   },
   {
-    key: "reliefweb-filtered",
-    label: "ReliefWeb MIT Statusfilter (so lief es bisher)",
-    url: RELIEFWEB_BASE + "&filter[field]=status&filter[value][]=alert&filter[value][]=current",
+    // Beleg-Probe: v1 wurde abgeschaltet (HTTP 410). Bleibt drin, damit man
+    // schwarz auf weiss sieht, WARUM auf v2 umgestellt wurde - und sofort
+    // merkt, falls sich daran je etwas aendern sollte.
+    key: "reliefweb-v1-abgeschaltet",
+    label: "ReliefWeb v1 (abgeschaltet – erwartet HTTP 410)",
+    url: "https://api.reliefweb.int/v1/disasters?appname=terminal-app-geopolitics&limit=1",
     headers: { "Accept": "application/json", "User-Agent": UA },
+    expectStatus: 410,
   },
   {
-    key: "reliefweb-ongoing",
-    label: "ReliefWeb mit Statuswerten alert/ongoing",
+    key: "reliefweb-v2-filtered",
+    label: "ReliefWeb v2 MIT Statusfilter alert/ongoing (Hauptpfad)",
     url: RELIEFWEB_BASE + "&filter[field]=status&filter[value][]=alert&filter[value][]=ongoing",
     headers: { "Accept": "application/json", "User-Agent": UA },
   },
   {
-    key: "reliefweb-plain",
-    label: "ReliefWeb OHNE Filter (Rueckfallebene)",
+    key: "reliefweb-v2-plain",
+    label: "ReliefWeb v2 OHNE Filter (Rueckfallebene 1)",
     url: RELIEFWEB_BASE,
+    headers: { "Accept": "application/json", "User-Agent": UA },
+  },
+  {
+    key: "reliefweb-v2-minimal",
+    label: "ReliefWeb v2 ohne Feldauswahl (Rueckfallebene 2)",
+    url: "https://api.reliefweb.int/v2/disasters?appname=terminal-app-geopolitics&limit=5",
     headers: { "Accept": "application/json", "User-Agent": UA },
   },
   {
@@ -133,6 +143,13 @@ async function probe(p) {
       } catch (e) { out.jsonParseError = String(e && e.message || e); }
     }
     if (res.ok && p.expect) { const warn = p.expect(raw); if (warn) out.warning = warn; }
+    // Manche Proben SOLLEN fehlschlagen (z.B. das abgeschaltete v1 mit 410).
+    // Die als Fehler zu zaehlen wuerde die Zusammenfassung unbrauchbar machen.
+    if (p.expectStatus != null) {
+      out.erwarteterStatus = p.expectStatus;
+      out.wieErwartet = res.status === p.expectStatus;
+      out.ok = out.wieErwartet;
+    }
     return out;
   } catch (e) {
     const ms = Date.now() - t0;

@@ -19,7 +19,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(computeLevel(5, false), "hoch", "5+ Artikel allein reicht fuer hoch");
     assert.strictEqual(computeLevel(0, true), "hoch", "aktive ReliefWeb-Krise allein reicht fuer hoch");
     assert.strictEqual(computeLevel(5, true), "kritisch", "beide Signale zusammen -> kritisch");
-    console.log("Block 1/8 (Stufenlogik): OK");
+    console.log("Block 1/12 (Stufenlogik): OK");
   }
 
   // --- Normalfall: ReliefWeb liefert 2 Laender, GDELT antwortet fuer alle ---
@@ -55,7 +55,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.ok(report.countries.RUS, "feste Watchlist muss aufgefuellt sein");
     assert.strictEqual(report.countries.RUS.level, "keine");
     assert.strictEqual(report.countries.RUS.reliefwebActive, false);
-    console.log("Block 2/8 (Normalfall, kombinierte Signale): OK");
+    console.log("Block 2/12 (Normalfall, kombinierte Signale): OK");
   }
 
   // --- ReliefWeb faellt aus -> trotzdem Bericht mit fester Watchlist, Fehler sichtbar ---
@@ -71,7 +71,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.ok(report.reliefwebError, "ReliefWeb-Fehler muss im Bericht sichtbar sein");
     assert.ok(report.countries.RUS, "feste Watchlist funktioniert weiter ohne ReliefWeb");
     assert.strictEqual(Object.keys(report.countries).length, 14, "genau die feste Watchlist (14 Laender), keine dynamischen dazu");
-    console.log("Block 3/8 (ReliefWeb-Ausfall, feste Liste als Basis): OK");
+    console.log("Block 3/12 (ReliefWeb-Ausfall, feste Liste als Basis): OK");
   }
 
   // --- Zeitbudget: haengende GDELT-Aufrufe duerfen den Bericht nicht blockieren ---
@@ -93,7 +93,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.ok(dt < 10000, "Gesamtlaufzeit muss unter dem Netlify-Funktionslimit bleiben, auch wenn alles haengt");
     const levels = Object.values(report.countries).map((c) => c.level);
     assert.ok(levels.some((l) => l === "nicht geprüft"), "mindestens ein Land muss als 'nicht geprüft' markiert sein, nicht faelschlich als 'keine'");
-    console.log("Block 4/8 (Zeitbudget schuetzt vor Timeout-Sturm): OK");
+    console.log("Block 4/12 (Zeitbudget schuetzt vor Timeout-Sturm): OK");
   }
 
   // --- ReliefWeb: 400 auf gefilterte Anfrage -> Fallback auf ungefilterte Anfrage ---
@@ -114,7 +114,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const report = await buildReport();
     assert.strictEqual(report.reliefwebError, null, "400 auf die gefilterte Anfrage darf dank Fallback keinen sichtbaren Fehler hinterlassen");
     assert.ok(report.countries.SDN && report.countries.SDN.reliefwebActive, "Rueckfallanfrage ohne Filter muss die Daten trotzdem liefern");
-    console.log("Block 5/8 (ReliefWeb 400 -> Fallback ohne Statusfilter): OK");
+    console.log("Block 5/12 (ReliefWeb 400 -> Fallback ohne Statusfilter): OK");
   }
 
   // --- Zeitbudget gilt AB FUNKTIONSSTART, nicht erst nach ReliefWeb ---
@@ -141,7 +141,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.ok(dt < 10000, "ReliefWeb-Zeit + GDELT-Wellen zusammen muessen unter Netlifys Funktionslimit bleiben");
     const levels = Object.values(report.countries).map((c) => c.level);
     assert.ok(levels.some((l) => l === "nicht geprüft"), "Budget muss trotz vorgelagerter ReliefWeb-Zeit greifen");
-    console.log("Block 6/8 (Zeitbudget ab Funktionsstart, deckt ReliefWeb + GDELT zusammen ab): OK");
+    console.log("Block 6/12 (Zeitbudget ab Funktionsstart, deckt ReliefWeb + GDELT zusammen ab): OK");
   }
 
   // --- ReliefWeb: Statuswerte + Fehlertext des Servers ---
@@ -163,12 +163,13 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.ok(!seenUrls[0].includes("value%5B%5D=current") && !seenUrls[0].includes("value[]=current"),
       "der Statuswert 'current' gehoert nicht zur disasters-Taxonomie und darf nicht mehr angefragt werden");
     assert.ok(seenUrls[0].includes("ongoing"), "stattdessen muss 'ongoing' angefragt werden");
-    assert.strictEqual(seenUrls.length, 2, "nach dem 400 muss genau einmal ungefiltert nachgefasst werden");
-    assert.ok(!seenUrls[1].includes("filter"), "der zweite Versuch muss ohne Filter laufen");
+    assert.strictEqual(seenUrls.length, 3, "bei durchgehendem 400 muessen alle drei Abfrageformen probiert werden (gefiltert, ungefiltert, ohne Feldauswahl)");
+    assert.ok(!seenUrls[1].includes("filter"), "der zweite Versuch muss ohne Statusfilter laufen");
+    assert.ok(!seenUrls[2].includes("fields"), "der dritte Versuch muss zusaetzlich ohne Feldauswahl laufen");
     // Und die Begruendung des Servers muss bis ins UI durchkommen.
     assert.ok(/Invalid value/.test(report.reliefwebError),
       "der erklaerende Fehlertext des Servers muss in reliefwebError landen - sonst steht im UI nur 'HTTP 400'");
-    console.log("Block 7/8 (ReliefWeb: korrekte Statuswerte + Fehlertext durchgereicht): OK");
+    console.log("Block 7/12 (ReliefWeb: korrekte Statuswerte + Fehlertext durchgereicht): OK");
   }
 
   // --- Timeout darf NICHT auf die ungefilterte Abfrage nachfassen (Zeitverschwendung) ---
@@ -188,7 +189,89 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(calls, 1, "bei einer Zeitueberschreitung darf NICHT nachgefasst werden - das wuerde nur ein zweites Timeout kosten");
     assert.ok(report.reliefwebError, "der Fehler muss trotzdem sichtbar bleiben");
     assert.ok(report.countries.RUS, "die feste Watchlist muss unabhaengig davon weiter funktionieren");
-    console.log("Block 8/8 (ReliefWeb: kein sinnloser zweiter Versuch nach Timeout): OK");
+    console.log("Block 8/12 (ReliefWeb: kein sinnloser zweiter Versuch nach Timeout): OK");
+  }
+
+  // --- API-Version: v1 ist abgeschaltet, es darf nur noch v2 angefragt werden ---
+  {
+    const seen = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("reliefweb.int")) {
+        seen.push(u);
+        // Wie die echte API v1 antwortet - falls doch jemand v1 anfragt, faellt es auf.
+        if (u.includes("/v1/")) return { ok: false, status: 410, text: async () => JSON.stringify({ status: 410, error: { type: "Exception", message: "The API version 'v1' has been decommissioned. Please use version 'v2' instead." } }) };
+        return { ok: true, status: 200, json: async () => ({ data: [
+          { fields: { name: "Sudan: Complex Emergency", date: { created: "2026-08-01T00:00:00" }, type: [{ name: "Complex Emergency" }], country: [{ iso3: "SDN", iso2: "SD", name: "Sudan" }] } },
+        ] }) };
+      }
+      if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
+      throw new Error("unerwartet: " + u);
+    };
+    const { buildReport } = freshHandler()._internal;
+    const report = await buildReport();
+    assert.ok(seen.length > 0, "ReliefWeb muss ueberhaupt angefragt werden");
+    assert.ok(seen.every((u) => u.includes("/v2/")), "es darf ausschliesslich API v2 angefragt werden - v1 ist abgeschaltet (HTTP 410)");
+    assert.strictEqual(report.reliefwebError, null);
+    assert.ok(report.countries.SDN && report.countries.SDN.reliefwebActive, "v2-Daten muessen normal verarbeitet werden");
+    console.log("Block 9/12 (nur API v2 wird angefragt): OK");
+  }
+
+  // --- 410 darf NICHT zu weiteren Versuchen fuehren (Version endgueltig weg) ---
+  {
+    let calls = 0;
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("reliefweb.int")) {
+        calls++;
+        return { ok: false, status: 410, text: async () => '{"error":{"message":"decommissioned"}}' };
+      }
+      if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
+      throw new Error("unerwartet: " + u);
+    };
+    const { buildReport } = freshHandler()._internal;
+    const report = await buildReport();
+    assert.strictEqual(calls, 1, "ein 410 gilt fuer jede Abfrageform derselben Version - weitere Versuche waeren Zeitverschwendung");
+    assert.ok(/410/.test(report.reliefwebError), "der 410 muss sichtbar bleiben");
+    console.log("Block 10/12 (410 beendet die Kette sofort): OK");
+  }
+
+  // --- Flache v2-Antwort (ohne fields-Umschlag) muss ebenfalls verarbeitet werden ---
+  {
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("reliefweb.int")) {
+        return { ok: true, status: 200, json: async () => ({ data: [
+          // Nutzdaten flach statt unter .fields, country als Objekt statt Array
+          { name: "Mali: Conflict", date: { created: "2026-07-20T00:00:00" }, type: { name: "Complex Emergency" }, country: { iso3: "MLI", iso2: "ML", name: "Mali" } },
+        ] }) };
+      }
+      if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
+      throw new Error("unerwartet: " + u);
+    };
+    const { buildReport } = freshHandler()._internal;
+    const report = await buildReport();
+    assert.ok(report.countries.MLI, "auch eine flache Antwortform muss zu einem Land fuehren");
+    assert.strictEqual(report.countries.MLI.reliefwebHeadline, "Mali: Conflict");
+    assert.strictEqual(report.countries.MLI.reliefwebType, "Complex Emergency");
+    assert.strictEqual(report.countries.MLI.reliefwebDate, "2026-07-20");
+    console.log("Block 11/12 (flaches v2-Format wird ebenfalls verstanden): OK");
+  }
+
+  // --- Unbekannter Antwortumschlag: Fehler statt stiller leerer Liste ---
+  {
+    global.fetch = async (url) => {
+      const u = String(url);
+      // Antwortet mit 200, aber ohne erkennbare Datenliste
+      if (u.includes("reliefweb.int")) return { ok: true, status: 200, json: async () => ({ meta: { total: 0 }, unerwartet: true }) };
+      if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
+      throw new Error("unerwartet: " + u);
+    };
+    const { buildReport } = freshHandler()._internal;
+    const report = await buildReport();
+    assert.ok(report.reliefwebError && /unerwartetes Antwortformat/.test(report.reliefwebError),
+      "ein unbekannter Umschlag darf nicht als 'keine Krisen weltweit' durchgehen, sondern muss als Fehler auffallen");
+    console.log("Block 12/12 (unbekanntes Antwortformat wird gemeldet, nicht verschluckt): OK");
   }
 
   console.log("\nAlle geopolitics.js-Tests erfolgreich.");

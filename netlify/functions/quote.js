@@ -99,7 +99,21 @@ function shape(data, symbol) {
   const series = [];
   for (let i = 0; i < ts.length; i++) { const c = closes[i]; if (c != null && !isNaN(c)) series.push({ t: new Date(ts[i] * 1000).toISOString().slice(0, 10), p: +(+c).toFixed(2), v: volumes[i] != null ? +volumes[i] : null }); }
   const price = meta.regularMarketPrice != null ? +(+meta.regularMarketPrice).toFixed(2) : (series.length ? series[series.length - 1].p : null);
-  const prevClose = meta.chartPreviousClose != null ? +(+meta.chartPreviousClose).toFixed(2) : (meta.previousClose != null ? +(+meta.previousClose).toFixed(2) : (series.length > 1 ? series[series.length - 2].p : null));
+  // WICHTIG: previousClose zuerst, chartPreviousClose NUR als Rueckfallebene.
+  //
+  // Yahoo liefert zwei verschiedene Dinge:
+  //   previousClose        = Schlusskurs des letzten Handelstages  -> Tagesveraenderung
+  //   chartPreviousClose   = Schlusskurs VOR dem angefragten Zeitraum -> zeitraumabhaengig!
+  //
+  // Vorher stand chartPreviousClose an erster Stelle. Da der Standard-Zeitraum
+  // "6mo" ist (und Watchlist/Index-Laufband ganz ohne Zeitraum anfragen), wurde
+  // die "Tagesveraenderung" in Wahrheit gegen den Kurs von vor sechs Monaten
+  // gerechnet - daher Werte wie "S&P 500 +11.91%" und der Eindruck, die
+  // Prozentzahlen bewegten sich nicht: sie hatten mit dem Handelstag nichts zu tun.
+  const prevClose = meta.previousClose != null ? +(+meta.previousClose).toFixed(2)
+    : (meta.regularMarketPreviousClose != null ? +(+meta.regularMarketPreviousClose).toFixed(2)
+      : (meta.chartPreviousClose != null ? +(+meta.chartPreviousClose).toFixed(2)
+        : (series.length > 1 ? series[series.length - 2].p : null)));
   const chg = (price != null && prevClose != null) ? +(price - prevClose).toFixed(2) : null;
   const chgPct = (price != null && prevClose != null && prevClose !== 0) ? +(((price - prevClose) / prevClose) * 100).toFixed(2) : null;
 
@@ -303,3 +317,6 @@ exports.handler = async (event) => {
     return { statusCode: 500, headers: cors, body: JSON.stringify({ error: String(e && e.message || e) }) };
   }
 };
+
+// Fuer Tests: Einzelfunktionen ohne HTTP-Handler-Wrapper zugaenglich machen.
+exports._internal = { shape, fromStooq, toStooqSymbol };
