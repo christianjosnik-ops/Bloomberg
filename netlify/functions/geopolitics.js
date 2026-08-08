@@ -1,15 +1,27 @@
 // Netlify Function: /.netlify/functions/geopolitics
 //
-// Weltlage-Uebersicht (F6) aus zwei komplementaeren, kostenlosen Quellen
-// OHNE API-Key:
-//   - ReliefWeb (UN OCHA): aktuelle offizielle Krisenmeldungen je Land
-//     (ein Aufruf, liefert gleichzeitig die dynamische Laenderliste)
+// Weltlage-Uebersicht (F6) aus mehreren kostenlosen Quellen OHNE API-Key:
+//   - UCDP (Uppsala Conflict Data Program): offene, schluessellose Konflikt-
+//     ereignisse je Land - liefert die dynamische Laenderliste (Hauptquelle)
+//   - ReliefWeb (UN OCHA): zusaetzliche Krisenmeldungen, ABER nur aktiv, wenn
+//     RELIEFWEB_APPNAME gesetzt ist (siehe Kommentar bei fetchReliefWeb)
 //   - GDELT: Nachrichtenvolumen zu Konflikt-Schlagwoertern je Beobachtungsland
 //     (mehrere Aufrufe, gestaffelt in Wellen mit hartem Zeitbudget)
 //
+// WARUM UCDP JETZT DIE HAUPTQUELLE IST: Live-Diagnose auf der echten Netlify-
+// Instanz zeigte, dass ReliefWeb v2 einen VORAB REGISTRIERTEN Appnamen verlangt
+// (HTTP 403 "not using an approved appname") - ohne Registrierung durch den
+// Betreiber ist ReliefWeb also grundsaetzlich blockiert, unabhaengig von der
+// Anfrageform. UCDP ist eine offen zugaengliche akademische Quelle ohne
+// Zugangsbeschraenkung und passt inhaltlich besser (Konfliktdaten statt
+// allgemeiner Katastrophenmeldungen).
+//
 // UNGETESTET gegen die echten APIs (kein Netzwerkzugriff in der Entwicklungs-
-// umgebung). Beide Antwortformate werden defensiv geparst - unerwartete Formen
-// fuehren zu leeren/neutralen Werten, nie zum Absturz.
+// umgebung). Alle Antwortformate werden defensiv geparst - unerwartete Formen
+// fuehren zu leeren/neutralen Werten, nie zum Absturz. UCDPs genaues
+// Versions-/Pfadschema konnte nicht live geprueft werden, deshalb zwei
+// plausible Kandidaten (siehe UCDP_CANDIDATES) - der Diagnose-Endpunkt zeigt,
+// welcher (falls ueberhaupt einer) traegt.
 //
 // Lektion aus dem Makro-Tab (F4) direkt angewendet: NICHT alle Laender in
 // einem Promise.all gleichzeitig abfragen (dann sieht keine Anfrage die
@@ -24,6 +36,7 @@ const CACHE = new Map(); const TTL = 20 * 60 * 1000; // 20 Min - Weltlage aender
 const WAVE = 5;
 const PER_REQUEST_TIMEOUT = 3000; // GDELT je Land
 const RELIEFWEB_TIMEOUT = 3000;   // ReliefWeb-Sammelabruf (ein Aufruf fuer alle Laender)
+const UCDP_TIMEOUT = 3000;        // je Kandidat (siehe UCDP_CANDIDATES)
 // Deckt ReliefWeb UND alle GDELT-Wellen ZUSAMMEN ab, mit Sicherheitsabstand
 // unter Netlifys 10s-Standardlimit fuer synchrone Functions. Vorher wurde die
 // Frist erst NACH dem ReliefWeb-Aufruf gesetzt - dadurch konnte die Gesamtlaufzeit
@@ -34,6 +47,127 @@ const RELIEFWEB_TIMEOUT = 3000;   // ReliefWeb-Sammelabruf (ein Aufruf fuer alle
 const FUNCTION_BUDGET_MS = 8500;
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
+// --- UCDP: Konfliktereignisse je Land (Hauptquelle, kein Key/Appname noetig) ---
+//
+// UCDP verwendet fuer manche Staaten historisch bedingte Namensformen
+// (z.B. "DR Congo (Zaire)", "Myanmar (Burma)"). Handkuratierte Alias-Tabelle,
+// bewusst nicht erschoepfend (wie FIXED_WATCHLIST in geo-countries.js) -
+// ein unbekannter Name wird uebersprungen statt einem falschen Land
+// zugeordnet zu werden. Deckt die aktuell/dauerhaft relevanten Konfliktzonen ab.
+const UCDP_COUNTRY_ALIASES = {
+  "russia (soviet union)": { iso3: "RUS", iso2: "RU", name: "Russia" },
+  "russia": { iso3: "RUS", iso2: "RU", name: "Russia" },
+  "ukraine": { iso3: "UKR", iso2: "UA", name: "Ukraine" },
+  "israel": { iso3: "ISR", iso2: "IL", name: "Israel" },
+  "palestine": { iso3: "PSE", iso2: "PS", name: "Palestine" },
+  "lebanon": { iso3: "LBN", iso2: "LB", name: "Lebanon" },
+  "syria": { iso3: "SYR", iso2: "SY", name: "Syria" },
+  "china": { iso3: "CHN", iso2: "CN", name: "China" },
+  "taiwan": { iso3: "TWN", iso2: "TW", name: "Taiwan" },
+  "north korea": { iso3: "PRK", iso2: "KP", name: "North Korea" },
+  "south korea": { iso3: "KOR", iso2: "KR", name: "South Korea" },
+  "india": { iso3: "IND", iso2: "IN", name: "India" },
+  "pakistan": { iso3: "PAK", iso2: "PK", name: "Pakistan" },
+  "iran": { iso3: "IRN", iso2: "IR", name: "Iran" },
+  "iraq": { iso3: "IRQ", iso2: "IQ", name: "Iraq" },
+  "sudan": { iso3: "SDN", iso2: "SD", name: "Sudan" },
+  "south sudan": { iso3: "SSD", iso2: "SS", name: "South Sudan" },
+  "yemen (north yemen)": { iso3: "YEM", iso2: "YE", name: "Yemen" },
+  "yemen": { iso3: "YEM", iso2: "YE", name: "Yemen" },
+  "somalia": { iso3: "SOM", iso2: "SO", name: "Somalia" },
+  "ethiopia": { iso3: "ETH", iso2: "ET", name: "Ethiopia" },
+  "nigeria": { iso3: "NGA", iso2: "NG", name: "Nigeria" },
+  "mali": { iso3: "MLI", iso2: "ML", name: "Mali" },
+  "niger": { iso3: "NER", iso2: "NE", name: "Niger" },
+  "burkina faso": { iso3: "BFA", iso2: "BF", name: "Burkina Faso" },
+  "dr congo (zaire)": { iso3: "COD", iso2: "CD", name: "DR Congo" },
+  "congo": { iso3: "COG", iso2: "CG", name: "Congo" },
+  "myanmar (burma)": { iso3: "MMR", iso2: "MM", name: "Myanmar" },
+  "afghanistan": { iso3: "AFG", iso2: "AF", name: "Afghanistan" },
+  "libya": { iso3: "LBY", iso2: "LY", name: "Libya" },
+  "colombia": { iso3: "COL", iso2: "CO", name: "Colombia" },
+  "haiti": { iso3: "HTI", iso2: "HT", name: "Haiti" },
+  "cameroon": { iso3: "CMR", iso2: "CM", name: "Cameroon" },
+  "chad": { iso3: "TCD", iso2: "TD", name: "Chad" },
+  "central african republic": { iso3: "CAF", iso2: "CF", name: "Central African Republic" },
+  "mozambique": { iso3: "MOZ", iso2: "MZ", name: "Mozambique" },
+  "georgia": { iso3: "GEO", iso2: "GE", name: "Georgia" },
+  "armenia": { iso3: "ARM", iso2: "AM", name: "Armenia" },
+  "azerbaijan": { iso3: "AZE", iso2: "AZ", name: "Azerbaijan" },
+  "venezuela": { iso3: "VEN", iso2: "VE", name: "Venezuela" },
+};
+
+function ucdpLookupCountry(rawName) {
+  if (!rawName) return null;
+  const key = String(rawName).trim().toLowerCase();
+  return UCDP_COUNTRY_ALIASES[key] || null;
+}
+
+// Sucht rekursiv nach dem Array der eigentlichen Ereignisse, unabhaengig vom
+// Umschlag der Antwort (direktes Array, {Result: [...]}, {result: [...]}, ...).
+// Gleiche Taktik wie findObservations() in fred.js fuer DBnomics - die genaue
+// Form der UCDP-Antwort konnte hier nicht live geprueft werden.
+function findUcdpEvents(node, depth) {
+  if (Array.isArray(node)) {
+    if (node.length && node.every((x) => x && typeof x === "object" && ("country" in x || "country_id" in x))) return node;
+    for (const item of node) { const hit = findUcdpEvents(item, (depth || 0) + 1); if (hit) return hit; }
+    return null;
+  }
+  if (!node || typeof node !== "object" || (depth || 0) > 4) return null;
+  for (const k of Object.keys(node)) { const hit = findUcdpEvents(node[k], (depth || 0) + 1); if (hit) return hit; }
+  return null;
+}
+
+// Zwei Kandidaten, aeltere zuerst nicht bevorzugt - der aktuellere/naeher an
+// "jetzt" liegende Datensatz (Candidate Events, woechentlich aktualisiert)
+// zuerst, das jaehrlich veroeffentlichte, dafuer stabilere GED als Rueckfall.
+// Versionskennungen sind Vermutungen (siehe Kommentar am Dateianfang).
+const UCDP_CANDIDATES = [
+  (cutoffStr) => `https://ucdpapi.pcr.uu.se/api/candidateevents/24.01.24?pagesize=1000&page=0&StartDate=${cutoffStr}`,
+  (cutoffStr) => `https://ucdpapi.pcr.uu.se/api/gedevents/24.1?pagesize=1000&page=0&StartDate=${cutoffStr}`,
+];
+
+async function fetchUcdp() {
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 120);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  const attempts = [];
+  for (const build of UCDP_CANDIDATES) {
+    const url = build(cutoffStr);
+    try {
+      const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } }, UCDP_TIMEOUT);
+      if (!res.ok) {
+        let detail = "";
+        try { detail = (await res.text()).slice(0, 200).replace(/\s+/g, " ").trim(); } catch (_) {}
+        attempts.push(`UCDP HTTP ${res.status}${detail ? " – " + detail : ""}`);
+        continue;
+      }
+      const json = await res.json();
+      const events = findUcdpEvents(json, 0);
+      if (!events) { attempts.push("UCDP: kein Ereignis-Array in der Antwort gefunden"); continue; }
+      const byCountry = new Map();
+      for (const ev of events) {
+        const rawName = ev.country || ev.country_name || null;
+        const c = ucdpLookupCountry(rawName);
+        if (!c || byCountry.has(c.iso3)) continue;
+        const dateStr = ev.date_start || ev.date_end || null;
+        byCountry.set(c.iso3, {
+          iso3: c.iso3, iso2: c.iso2, name: c.name,
+          ucdpActive: true,
+          ucdpType: ev.type_of_violence != null ? String(ev.type_of_violence) : null,
+          ucdpDate: dateStr ? String(dateStr).slice(0, 10) : null,
+        });
+      }
+      if (byCountry.size) return byCountry;
+      attempts.push("UCDP: keines der gemeldeten Laender konnte zugeordnet werden");
+    } catch (e) {
+      attempts.push(String((e && e.message) || e));
+      // Timeout = Host antwortet nicht - der zweite Kandidat probiert eine
+      // ANDERE URL, das ist kein sinnloses Nachfassen wie bei ReliefWebs 410.
+    }
+  }
+  throw new Error(attempts.join(" | "));
+}
 
 // --- ReliefWeb: aktuelle Krisen je Land (ein Aufruf, appname statt Key) -----
 async function fetchReliefWebOnce(url) {
@@ -95,18 +229,32 @@ function parseReliefWebItems(items) {
 //   been decommissioned. Please use version 'v2' instead."}}
 // Deshalb v2 als Hauptpfad. v1 wird NICHT mehr angefragt - ein 410 ist endgueltig
 // und ein weiterer Versuch waere reine Zeitverschwendung.
+// Live-Beleg aus dem Diagnose-Endpunkt: "country.iso2" wurde mit HTTP 400
+// "Unrecognized field 'country.iso2' in parameter 'fields'" abgelehnt - dieses
+// Feld gibt es im ReliefWeb-v2-Schema nicht (nur country.iso3). War der Grund,
+// warum sowohl der gefilterte als auch der ungefilterte Pfad scheiterten -
+// beide enthielten dasselbe ungueltige Feld.
 const RELIEFWEB_FIELDS =
   "&fields[include][]=name&fields[include][]=date.created&fields[include][]=type.name"
-  + "&fields[include][]=country.iso3&fields[include][]=country.iso2&fields[include][]=country.name";
+  + "&fields[include][]=country.iso3&fields[include][]=country.name";
+// Live-Beleg: die feldlose Rueckfallebene (RELIEFWEB_MINIMAL) lieferte HTTP 403
+// "You are not using an approved appname. Kindly request an approved appname
+// here: https://apidoc.reliefweb.int/apidoc" - ReliefWeb v2 verlangt inzwischen
+// einen VORAB REGISTRIERTEN Appnamen (anders als v1, wo ein beliebiger String
+// genuegte). Das ist kein Fehler in unserer Anfrageform, sondern eine externe
+// Registrierung, die kein Code-Fix umgehen kann. Ueber Umgebungsvariable
+// konfigurierbar, damit ein spaeter genehmigter Appname per Netlify-Env ohne
+// Redeploy eingetragen werden kann.
+const RELIEFWEB_APPNAME = process.env.RELIEFWEB_APPNAME || "terminal-app-geopolitics";
 const RELIEFWEB_BASE = "https://api.reliefweb.int/v2/disasters"
-  + "?appname=terminal-app-geopolitics"
+  + "?appname=" + encodeURIComponent(RELIEFWEB_APPNAME)
   + RELIEFWEB_FIELDS
   + "&sort[]=date.created:desc&limit=100";
 // Statuswerte des disasters-Endpunkts: "alert", "ongoing", "past".
 const RELIEFWEB_FILTERED = RELIEFWEB_BASE + "&filter[field]=status&filter[value][]=alert&filter[value][]=ongoing";
 // Ohne fields[include]: falls v2 die Feldauswahl anders benennt, liefert die
 // nackte Abfrage immer noch verwertbare Datensaetze (nur groesser).
-const RELIEFWEB_MINIMAL = "https://api.reliefweb.int/v2/disasters?appname=terminal-app-geopolitics&limit=100";
+const RELIEFWEB_MINIMAL = "https://api.reliefweb.int/v2/disasters?appname=" + encodeURIComponent(RELIEFWEB_APPNAME) + "&limit=100";
 
 async function fetchReliefWeb() {
   const attempts = [];
@@ -150,22 +298,47 @@ async function fetchGdeltFor(country) {
   };
 }
 
-function computeLevel(gdeltCount, reliefwebActive) {
-  if (reliefwebActive && gdeltCount >= 5) return "kritisch";
-  if (reliefwebActive || gdeltCount >= 5) return "hoch";
+function computeLevel(gdeltCount, officialActive) {
+  if (officialActive && gdeltCount >= 5) return "kritisch";
+  if (officialActive || gdeltCount >= 5) return "hoch";
   if (gdeltCount >= 2) return "mittel";
   if (gdeltCount >= 1) return "niedrig";
   return "keine";
 }
 
 async function buildReport() {
-  // Ab Funktionsstart, nicht erst nach ReliefWeb - siehe Kommentar bei FUNCTION_BUDGET_MS.
+  // Ab Funktionsstart, nicht erst nach den dynamischen Quellen - siehe
+  // Kommentar bei FUNCTION_BUDGET_MS.
   const deadline = Date.now() + FUNCTION_BUDGET_MS;
 
-  let rwByCountry = new Map(); let rwError = null;
-  try { rwByCountry = await fetchReliefWeb(); } catch (e) { rwError = String(e && e.message || e); }
+  let ucdpByCountry = new Map(); let ucdpError = null;
+  try { ucdpByCountry = await fetchUcdp(); } catch (e) { ucdpError = String(e && e.message || e); }
 
-  const watchlist = buildWatchlist(Array.from(rwByCountry.values()));
+  // ReliefWeb v2 verlangt einen VORAB REGISTRIERTEN Appnamen (Live-Beleg:
+  // HTTP 403 "not using an approved appname") - ohne einen ist jeder Versuch
+  // ein garantierter Fehlschlag, der nur Zeit aus dem knappen Gesamtbudget
+  // nimmt. Deshalb standardmaessig uebersprungen; sobald RELIEFWEB_APPNAME
+  // gesetzt ist (nach Registrierung unter https://apidoc.reliefweb.int/apidoc),
+  // wird ReliefWeb wieder als Zusatzquelle mitgenutzt.
+  let rwByCountry = new Map(); let rwError = null;
+  if (process.env.RELIEFWEB_APPNAME) {
+    try { rwByCountry = await fetchReliefWeb(); } catch (e) { rwError = String(e && e.message || e); }
+  } else {
+    rwError = "übersprungen: kein genehmigter Appname konfiguriert (RELIEFWEB_APPNAME) – Registrierung: https://apidoc.reliefweb.int/apidoc";
+  }
+
+  // Beide dynamischen Quellen zu einer Laenderliste kombinieren. UCDP zuerst
+  // (Konflikt-Hauptquelle), ReliefWeb ergaenzt bekannte Laender um seine
+  // Zusatzinfo (Schlagzeile) und fuegt Laender hinzu, die UCDP nicht kennt.
+  const dynamicCountries = new Map(ucdpByCountry);
+  for (const [iso3, c] of rwByCountry) {
+    const existing = dynamicCountries.get(iso3);
+    dynamicCountries.set(iso3, existing ? Object.assign({}, existing, {
+      reliefwebActive: true, reliefwebType: c.reliefwebType, reliefwebHeadline: c.reliefwebHeadline, reliefwebDate: c.reliefwebDate,
+    }) : c);
+  }
+
+  const watchlist = buildWatchlist(Array.from(dynamicCountries.values()));
   const out = {};
 
   for (let i = 0; i < watchlist.length; i += WAVE) {
@@ -175,32 +348,34 @@ async function buildReport() {
     // reisst das Gesamtbudget trotzdem.
     if (Date.now() + PER_REQUEST_TIMEOUT > deadline) {
       for (const c of watchlist.slice(i)) {
-        const rw = rwByCountry.get(c.iso3) || null;
-        out[c.iso3] = baseEntry(c, rw, null, "nicht geprüft (Zeitbudget erreicht)");
+        const dyn = dynamicCountries.get(c.iso3) || null;
+        out[c.iso3] = baseEntry(c, dyn, null, "nicht geprüft (Zeitbudget erreicht)");
       }
       break;
     }
     const wave = watchlist.slice(i, i + WAVE);
     const settled = await Promise.all(wave.map(async (c) => {
-      const rw = rwByCountry.get(c.iso3) || null;
-      try { return { c, rw, gdelt: await fetchGdeltFor(c) }; }
-      catch (e) { return { c, rw, gdelt: null, err: String(e && e.message || e) }; }
+      const dyn = dynamicCountries.get(c.iso3) || null;
+      try { return { c, dyn, gdelt: await fetchGdeltFor(c) }; }
+      catch (e) { return { c, dyn, gdelt: null, err: String(e && e.message || e) }; }
     }));
-    for (const r of settled) out[r.c.iso3] = baseEntry(r.c, r.rw, r.gdelt, r.err || null);
+    for (const r of settled) out[r.c.iso3] = baseEntry(r.c, r.dyn, r.gdelt, r.err || null);
   }
 
-  return { countries: out, reliefwebError: rwError, generatedAt: new Date().toISOString() };
+  return { countries: out, ucdpError, reliefwebError: rwError, generatedAt: new Date().toISOString() };
 }
 
-function baseEntry(c, rw, gdelt, error) {
-  const reliefwebActive = !!(rw && rw.reliefwebActive);
+function baseEntry(c, dyn, gdelt, error) {
+  const ucdpActive = !!(dyn && dyn.ucdpActive);
+  const reliefwebActive = !!(dyn && dyn.reliefwebActive);
   const gdeltCount = gdelt ? gdelt.count : 0;
   return {
-    iso3: c.iso3, iso2: c.iso2 || (rw && rw.iso2) || null, name: c.name || (rw && rw.name) || c.iso3,
-    flag: flagEmoji(c.iso2 || (rw && rw.iso2)),
-    level: gdelt === null && error ? "nicht geprüft" : computeLevel(gdeltCount, reliefwebActive),
+    iso3: c.iso3, iso2: c.iso2 || (dyn && dyn.iso2) || null, name: c.name || (dyn && dyn.name) || c.iso3,
+    flag: flagEmoji(c.iso2 || (dyn && dyn.iso2)),
+    level: gdelt === null && error ? "nicht geprüft" : computeLevel(gdeltCount, ucdpActive || reliefwebActive),
     gdeltCount, headlines: gdelt ? gdelt.headlines : [],
-    reliefwebActive, reliefwebType: rw ? rw.reliefwebType : null, reliefwebHeadline: rw ? rw.reliefwebHeadline : null, reliefwebDate: rw ? rw.reliefwebDate : null,
+    ucdpActive, ucdpType: dyn ? dyn.ucdpType : null, ucdpDate: dyn ? dyn.ucdpDate : null,
+    reliefwebActive, reliefwebType: dyn ? dyn.reliefwebType : null, reliefwebHeadline: dyn ? dyn.reliefwebHeadline : null, reliefwebDate: dyn ? dyn.reliefwebDate : null,
     error: error || null,
   };
 }
@@ -223,4 +398,4 @@ exports.handler = async (event) => {
 };
 
 // Fuer Tests: Einzelfunktionen ohne HTTP-Handler-Wrapper zugaenglich machen.
-exports._internal = { computeLevel, baseEntry, buildReport };
+exports._internal = { computeLevel, baseEntry, buildReport, ucdpLookupCountry, findUcdpEvents, fetchUcdp };

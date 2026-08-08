@@ -5,12 +5,12 @@
 // Auszug des Antwortkoerpers.
 //
 // Warum es das gibt: Die Entwicklungsumgebung erreicht fred.stlouisfed.org,
-// api.reliefweb.int und api.db.nomics.world nicht (Egress-Richtlinie blockt
-// CONNECT mit 403). Fehler wie "ReliefWeb nicht erreichbar" lassen sich von
-// dort also nicht nachstellen. Diese Function laeuft dagegen auf Netlify, wo
-// die echten Aufrufe stattfinden - ihr Ergebnis zeigt den konkreten Grund
-// (falscher Filterwert, Bot-Sperre, geaenderter Pfad, Zeitueberschreitung...)
-// statt nur "hat nicht geklappt".
+// api.reliefweb.int, api.db.nomics.world und ucdpapi.pcr.uu.se nicht (Egress-
+// Richtlinie blockt CONNECT mit 403). Fehler wie "ReliefWeb nicht erreichbar"
+// lassen sich von dort also nicht nachstellen. Diese Function laeuft dagegen
+// auf Netlify, wo die echten Aufrufe stattfinden - ihr Ergebnis zeigt den
+// konkreten Grund (falscher Filterwert, Bot-Sperre, geaenderter Pfad,
+// Zeitueberschreitung...) statt nur "hat nicht geklappt".
 //
 // Aufruf:  /.netlify/functions/diag           (alle Quellen)
 //          /.netlify/functions/diag?only=reliefweb
@@ -20,6 +20,13 @@
 // Anfrage-Header ausgegeben - nur Statuszeilen und ein gekuerzter Auszug des
 // Antwortkoerpers.
 
+// Siehe ausfuehrlicher Kommentar in lib/providers.js: fred-csv UND gdelt
+// verstummten im Livebetrieb beide komplett (kein Status, keine Bytes) - das
+// Symptom eines haengenden IPv6-Verbindungsversuchs ohne funktionierendes
+// IPv6-Egress. Diese Function nutzt providers.js NICHT (rohes fetch), deshalb
+// hier derselbe Fix separat.
+require("dns").setDefaultResultOrder("ipv4first");
+
 const PROBE_TIMEOUT = 6000;
 const BODY_SNIPPET = 400;
 
@@ -28,10 +35,21 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 // Aus fred.js/geopolitics.js gespiegelt, damit die Diagnose GENAU die URLs
 // prueft, die im Betrieb verwendet werden. Weichen die Dateien auseinander,
 // diagnostiziert man sonst etwas anderes als das, was tatsaechlich laeuft.
+//
+// Live-Beleg: "country.iso2" wurde mit HTTP 400 "Unrecognized field
+// 'country.iso2' in parameter 'fields'" abgelehnt - dieses Feld gibt es im
+// ReliefWeb-v2-Schema nicht (nur iso3). Deshalb entfernt.
 const RW_FIELDS = "&fields[include][]=name&fields[include][]=date.created&fields[include][]=type.name"
-  + "&fields[include][]=country.iso3&fields[include][]=country.iso2&fields[include][]=country.name";
+  + "&fields[include][]=country.iso3&fields[include][]=country.name";
+// Live-Beleg: die feldlose Rueckfallebene lieferte HTTP 403 "You are not
+// using an approved appname" - ReliefWeb v2 verlangt inzwischen einen
+// REGISTRIERTEN Appnamen (anders als v1). Das ist kein URL-Formfehler, den
+// Code beheben kann, sondern eine externe Registrierung. Ueber Umgebungs-
+// variable konfigurierbar, damit ein spaeter genehmigter Appname ohne
+// Redeploy eingetragen werden kann.
+const RELIEFWEB_APPNAME = process.env.RELIEFWEB_APPNAME || "terminal-app-geopolitics";
 const RELIEFWEB_BASE = "https://api.reliefweb.int/v2/disasters"
-  + "?appname=terminal-app-geopolitics" + RW_FIELDS + "&sort[]=date.created:desc&limit=5";
+  + "?appname=" + encodeURIComponent(RELIEFWEB_APPNAME) + RW_FIELDS + "&sort[]=date.created:desc&limit=5";
 
 const PROBES = [
   {
@@ -83,12 +101,31 @@ const PROBES = [
     headers: { "Accept": "application/json", "User-Agent": UA },
   },
   {
+    // UCDP ist seit dem Appname-Befund (siehe reliefweb-v2-minimal weiter
+    // unten) die Hauptquelle fuer die dynamische Laenderliste in F6 WELTLAGE.
+    // Kandidat 1: woechentlich aktualisierte, noch nicht endgueltig gepruefte
+    // Ereignisse. Pfad-/Versionsschema ungetestet - reine Erreichbarkeits-
+    // und Formpruefung.
+    key: "ucdp-candidateevents",
+    label: "UCDP Kandidat 1 (Candidate Events, woechentlich aktualisiert)",
+    url: "https://ucdpapi.pcr.uu.se/api/candidateevents/24.01.24?pagesize=5&page=0",
+    headers: { "Accept": "application/json", "User-Agent": UA },
+  },
+  {
+    // Kandidat 2: jaehrlich veroeffentlichter, endgueltig gepruefter Datensatz
+    // (Georeferenced Event Dataset) - traeger, aber stabileres Schema.
+    key: "ucdp-gedevents",
+    label: "UCDP Kandidat 2 (Georeferenced Event Dataset, jaehrlich)",
+    url: "https://ucdpapi.pcr.uu.se/api/gedevents/24.1?pagesize=5&page=0",
+    headers: { "Accept": "application/json", "User-Agent": UA },
+  },
+  {
     // Beleg-Probe: v1 wurde abgeschaltet (HTTP 410). Bleibt drin, damit man
     // schwarz auf weiss sieht, WARUM auf v2 umgestellt wurde - und sofort
     // merkt, falls sich daran je etwas aendern sollte.
     key: "reliefweb-v1-abgeschaltet",
     label: "ReliefWeb v1 (abgeschaltet – erwartet HTTP 410)",
-    url: "https://api.reliefweb.int/v1/disasters?appname=terminal-app-geopolitics&limit=1",
+    url: "https://api.reliefweb.int/v1/disasters?appname=" + encodeURIComponent(RELIEFWEB_APPNAME) + "&limit=1",
     headers: { "Accept": "application/json", "User-Agent": UA },
     expectStatus: 410,
   },
@@ -107,8 +144,35 @@ const PROBES = [
   {
     key: "reliefweb-v2-minimal",
     label: "ReliefWeb v2 ohne Feldauswahl (Rueckfallebene 2)",
-    url: "https://api.reliefweb.int/v2/disasters?appname=terminal-app-geopolitics&limit=5",
+    url: "https://api.reliefweb.int/v2/disasters?appname=" + encodeURIComponent(RELIEFWEB_APPNAME) + "&limit=5",
     headers: { "Accept": "application/json", "User-Agent": UA },
+  },
+  {
+    // Beleg-Probe fuer DBnomics: zeigt, ob 'FRED' ueberhaupt (noch) als
+    // Provider im Katalog steht. Die Kandidaten 1+2 scheiterten beide mit
+    // "Could not find storage directory for provider 'FRED'" - das ist KEIN
+    // Formatfehler unserer URL (der Provider-Code wird korrekt erkannt),
+    // sondern DBnomics selbst findet die hinterlegten Daten fuer FRED nicht.
+    // Diese Probe unterscheidet "Provider fehlt im Katalog komplett" von
+    // "Provider bekannt, aber Datenspeicher gerade nicht verfuegbar".
+    key: "dbnomics-providers",
+    label: "DBnomics Katalog (Beleg: steht 'FRED' ueberhaupt in der Providerliste?)",
+    url: "https://api.db.nomics.world/v22/providers?limit=1000",
+    headers: { "Accept": "application/json", "User-Agent": UA },
+    expect: (body) => {
+      try {
+        const j = JSON.parse(body);
+        const list = (j && j.providers && (j.providers.docs || j.providers)) || j.docs || [];
+        const codes = (Array.isArray(list) ? list : []).map((p) => p && (p.code || p.provider_code)).filter(Boolean);
+        if (!codes.length) return "konnte keine Provider-Codes aus der Antwort lesen";
+        const hasFred = codes.some((c) => String(c).toUpperCase() === "FRED");
+        if (!hasFred) {
+          const aehnlich = codes.filter((c) => /fed|fred/i.test(String(c)));
+          return "Provider 'FRED' NICHT in der Katalogliste" + (aehnlich.length ? " – aehnliche Codes: " + aehnlich.join(", ") : " (keine aehnlichen Codes gefunden)");
+        }
+        return null;
+      } catch (e) { return "Antwort konnte nicht als Providerliste geparst werden: " + String(e && e.message || e); }
+    },
   },
   {
     key: "gdelt",

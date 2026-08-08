@@ -1,12 +1,34 @@
 // geopolitics.test.js — Unit-Tests fuer die Weltlage-Function.
 // Kein Test-Framework, nur Node + assert:  node geopolitics.test.js
 // Alle HTTP-Aufrufe hier sind gefakt - es geht um die Aggregations-, Level-
-// und Zeitbudget-Logik, nicht um echte GDELT-/ReliefWeb-Antworten.
+// und Zeitbudget-Logik, nicht um echte GDELT-/UCDP-/ReliefWeb-Antworten.
+//
+// Architektur seit der ReliefWeb-Appname-Sperre (Live-Beleg: HTTP 403 "not
+// using an approved appname"): UCDP ist die Hauptquelle fuer die dynamische
+// Laenderliste, ReliefWeb wird NUR versucht, wenn RELIEFWEB_APPNAME gesetzt
+// ist. Jeder Test muss darum entweder (a) UCDP mocken und ReliefWeb
+// unangetastet lassen (Appname bleibt unset), oder (b) fuer ReliefWeb-
+// spezifische Tests RELIEFWEB_APPNAME setzen UND UCDP mocken (sonst wirft
+// buildReport auf eine unerwartete URL).
 
 const assert = require("assert");
 const path = "/home/user/Bloomberg/netlify/functions/geopolitics.js";
 
-function freshHandler() { delete require.cache[require.resolve(path)]; return require(path); }
+function freshHandler() {
+  delete require.cache[require.resolve(path)];
+  delete process.env.RELIEFWEB_APPNAME; // sauberer Ausgangszustand fuer jeden Block
+  return require(path);
+}
+
+// Baut eine plausible UCDP-Antwort. Envelope per Parameter variierbar, damit
+// findUcdpEvents() gegen mehrere Umschlagformen geprueft werden kann.
+function ucdpBody(events, envelope) {
+  const arr = events;
+  if (envelope === "Result") return { Result: arr };
+  if (envelope === "result") return { result: arr };
+  if (envelope === "nested") return { data: { rows: arr } };
+  return arr; // direktes Array
+}
 
 (async function run() {
   // --- computeLevel(): Stufenlogik isoliert pruefen ---
@@ -17,25 +39,22 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(computeLevel(2, false), "mittel");
     assert.strictEqual(computeLevel(4, false), "mittel");
     assert.strictEqual(computeLevel(5, false), "hoch", "5+ Artikel allein reicht fuer hoch");
-    assert.strictEqual(computeLevel(0, true), "hoch", "aktive ReliefWeb-Krise allein reicht fuer hoch");
+    assert.strictEqual(computeLevel(0, true), "hoch", "aktive offizielle Quelle allein reicht fuer hoch");
     assert.strictEqual(computeLevel(5, true), "kritisch", "beide Signale zusammen -> kritisch");
-    console.log("Block 1/12 (Stufenlogik): OK");
+    console.log("Block 1/14 (Stufenlogik): OK");
   }
 
-  // --- Normalfall: ReliefWeb liefert 2 Laender, GDELT antwortet fuer alle ---
+  // --- UCDP liefert Laender, GDELT antwortet fuer alle -> kombinierte Stufe ---
   {
     global.fetch = async (url) => {
       const u = String(url);
-      if (u.includes("reliefweb.int")) {
-        return { ok: true, status: 200, json: async () => ({
-          data: [
-            { fields: { name: "Sudan conflict escalation", date: { created: "2026-08-01T00:00:00" }, type: [{ name: "Complex Emergency" }], country: [{ iso3: "SDN", iso2: "SD", name: "Sudan" }] } },
-            { fields: { name: "Gaza humanitarian crisis", date: { created: "2026-08-05T00:00:00" }, type: [{ name: "Complex Emergency" }], country: [{ iso3: "PSE", iso2: "PS", name: "Palestine" }] } },
-          ],
-        }) };
+      if (u.includes("ucdpapi.pcr.uu.se")) {
+        return { ok: true, status: 200, json: async () => ucdpBody([
+          { country: "Sudan", date_start: "2026-08-01", type_of_violence: 1 },
+          { country: "Palestine", date_start: "2026-08-05", type_of_violence: 2 },
+        ]) };
       }
       if (u.includes("gdeltproject.org")) {
-        // Sudan bekommt 6 Artikel (-> hoch/kritisch kombiniert mit ReliefWeb), alle anderen 0
         const many = u.includes("Sudan");
         const articles = many ? Array.from({ length: 6 }, (_, i) => ({ title: "Sudan clash report " + i, url: "https://x/" + i, seendate: "20260807T000000Z", domain: "reuters.com" })) : [];
         return { ok: true, status: 200, json: async () => ({ articles }) };
@@ -44,43 +63,42 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     };
     const { buildReport } = freshHandler()._internal;
     const report = await buildReport();
-    assert.strictEqual(report.reliefwebError, null);
-    assert.ok(report.countries.SDN, "Sudan muss in der Watchlist sein (aus ReliefWeb)");
-    assert.strictEqual(report.countries.SDN.level, "kritisch", "ReliefWeb aktiv + 6 GDELT-Artikel -> kritisch");
-    assert.strictEqual(report.countries.SDN.reliefwebHeadline, "Sudan conflict escalation");
-    assert.strictEqual(report.countries.SDN.flag, "🇸🇩");
+    assert.strictEqual(report.ucdpError, null);
+    assert.ok(report.countries.SDN, "Sudan muss in der Watchlist sein (aus UCDP)");
+    assert.strictEqual(report.countries.SDN.level, "kritisch", "UCDP aktiv + 6 GDELT-Artikel -> kritisch");
+    assert.strictEqual(report.countries.SDN.ucdpActive, true);
     assert.ok(report.countries.PSE, "Palestine muss in der Watchlist sein");
-    assert.strictEqual(report.countries.PSE.level, "hoch", "ReliefWeb aktiv, aber 0 GDELT-Treffer -> hoch (nicht kritisch)");
-    // Ein Land aus der festen Liste ohne ReliefWeb-Eintrag und ohne GDELT-Treffer
+    assert.strictEqual(report.countries.PSE.level, "hoch", "UCDP aktiv, aber 0 GDELT-Treffer -> hoch (nicht kritisch)");
     assert.ok(report.countries.RUS, "feste Watchlist muss aufgefuellt sein");
     assert.strictEqual(report.countries.RUS.level, "keine");
-    assert.strictEqual(report.countries.RUS.reliefwebActive, false);
-    console.log("Block 2/12 (Normalfall, kombinierte Signale): OK");
+    assert.strictEqual(report.countries.RUS.ucdpActive, false);
+    console.log("Block 2/14 (UCDP-Normalfall, kombinierte Signale): OK");
   }
 
-  // --- ReliefWeb faellt aus -> trotzdem Bericht mit fester Watchlist, Fehler sichtbar ---
+  // --- UCDP faellt komplett aus -> trotzdem Bericht mit fester Watchlist ---
   {
     global.fetch = async (url) => {
       const u = String(url);
-      if (u.includes("reliefweb.int")) throw new Error("ReliefWeb nicht erreichbar");
+      if (u.includes("ucdpapi.pcr.uu.se")) throw new Error("UCDP nicht erreichbar");
       if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
       throw new Error("unerwartet: " + u);
     };
     const { buildReport } = freshHandler()._internal;
     const report = await buildReport();
-    assert.ok(report.reliefwebError, "ReliefWeb-Fehler muss im Bericht sichtbar sein");
-    assert.ok(report.countries.RUS, "feste Watchlist funktioniert weiter ohne ReliefWeb");
+    assert.ok(report.ucdpError, "UCDP-Fehler muss im Bericht sichtbar sein");
+    assert.ok(/UCDP nicht erreichbar/.test(report.ucdpError));
+    assert.ok(report.countries.RUS, "feste Watchlist funktioniert weiter ohne UCDP");
     assert.strictEqual(Object.keys(report.countries).length, 14, "genau die feste Watchlist (14 Laender), keine dynamischen dazu");
-    console.log("Block 3/12 (ReliefWeb-Ausfall, feste Liste als Basis): OK");
+    assert.ok(/übersprungen/.test(report.reliefwebError), "ohne RELIEFWEB_APPNAME muss ReliefWeb als uebersprungen gemeldet werden, nicht als Fehlschlag");
+    console.log("Block 3/14 (UCDP-Ausfall, feste Liste als Basis, ReliefWeb standardmaessig uebersprungen): OK");
   }
 
   // --- Zeitbudget: haengende GDELT-Aufrufe duerfen den Bericht nicht blockieren ---
   {
     global.fetch = async (url, opts) => {
       const u = String(url);
-      if (u.includes("reliefweb.int")) return { ok: true, status: 200, json: async () => ({ data: [] }) };
+      if (u.includes("ucdpapi.pcr.uu.se")) return { ok: true, status: 200, json: async () => ucdpBody([]) };
       if (u.includes("gdeltproject.org")) {
-        // haengt permanent - nur das Abort-Signal beendet den Aufruf
         return new Promise((_, reject) => { if (opts && opts.signal) opts.signal.addEventListener("abort", () => reject(new Error("aborted"))); });
       }
       throw new Error("unerwartet: " + u);
@@ -93,40 +111,34 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.ok(dt < 10000, "Gesamtlaufzeit muss unter dem Netlify-Funktionslimit bleiben, auch wenn alles haengt");
     const levels = Object.values(report.countries).map((c) => c.level);
     assert.ok(levels.some((l) => l === "nicht geprüft"), "mindestens ein Land muss als 'nicht geprüft' markiert sein, nicht faelschlich als 'keine'");
-    console.log("Block 4/12 (Zeitbudget schuetzt vor Timeout-Sturm): OK");
+    console.log("Block 4/14 (Zeitbudget schuetzt vor Timeout-Sturm): OK");
   }
 
-  // --- ReliefWeb: 400 auf gefilterte Anfrage -> Fallback auf ungefilterte Anfrage ---
+  // --- UCDP: erster Kandidat scheitert -> zweiter Kandidat wird probiert ---
   {
+    let calls = 0;
     global.fetch = async (url) => {
       const u = String(url);
-      if (u.includes("reliefweb.int")) {
-        if (u.includes("filter")) return { ok: false, status: 400, json: async () => ({ error: "invalid filter value" }) };
-        // Ungefilterte Rueckfallanfrage liefert trotzdem verwertbare Daten
-        return { ok: true, status: 200, json: async () => ({ data: [
-          { fields: { name: "Sudan conflict escalation", date: { created: "2026-08-01T00:00:00" }, type: [{ name: "Complex Emergency" }], country: [{ iso3: "SDN", iso2: "SD", name: "Sudan" }] } },
-        ] }) };
-      }
+      if (u.includes("candidateevents")) { calls++; return { ok: false, status: 404, text: async () => "not found" }; }
+      if (u.includes("gedevents")) { calls++; return { ok: true, status: 200, json: async () => ucdpBody([{ country: "Mali", date_start: "2026-07-01" }]) }; }
       if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
       throw new Error("unerwartet: " + u);
     };
     const { buildReport } = freshHandler()._internal;
     const report = await buildReport();
-    assert.strictEqual(report.reliefwebError, null, "400 auf die gefilterte Anfrage darf dank Fallback keinen sichtbaren Fehler hinterlassen");
-    assert.ok(report.countries.SDN && report.countries.SDN.reliefwebActive, "Rueckfallanfrage ohne Filter muss die Daten trotzdem liefern");
-    console.log("Block 5/12 (ReliefWeb 400 -> Fallback ohne Statusfilter): OK");
+    assert.strictEqual(calls, 2, "beide UCDP-Kandidaten muessen probiert werden, wenn der erste fehlschlaegt");
+    assert.strictEqual(report.ucdpError, null, "greift der zweite Kandidat, darf kein Fehler im Bericht stehen");
+    assert.ok(report.countries.MLI && report.countries.MLI.ucdpActive, "Daten des zweiten Kandidaten muessen ankommen");
+    console.log("Block 5/14 (UCDP: Rueckfall auf zweiten Kandidaten): OK");
   }
 
-  // --- Zeitbudget gilt AB FUNKTIONSSTART, nicht erst nach ReliefWeb ---
+  // --- Zeitbudget gilt AB FUNKTIONSSTART, nicht erst nach UCDP ---
   {
     global.fetch = async (url, opts) => {
       const u = String(url);
-      if (u.includes("reliefweb.int")) {
-        // Realistisch langsam, aber kein Timeout - simuliert einen trueben aber
-        // erfolgreichen ReliefWeb-Aufruf, der frueher faelschlich NICHT gegen das
-        // Gesamtbudget zaehlte.
+      if (u.includes("candidateevents")) {
         await new Promise((r) => setTimeout(r, 1500));
-        return { ok: true, status: 200, json: async () => ({ data: [] }) };
+        return { ok: true, status: 200, json: async () => ucdpBody([]) };
       }
       if (u.includes("gdeltproject.org")) {
         return new Promise((_, reject) => { if (opts && opts.signal) opts.signal.addEventListener("abort", () => reject(new Error("aborted"))); });
@@ -137,141 +149,169 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const t0 = Date.now();
     const report = await buildReport();
     const dt = Date.now() - t0;
-    console.log("  Dauer bei langsamem ReliefWeb (1.5s) + haengendem GDELT:", (dt / 1000).toFixed(1) + "s");
-    assert.ok(dt < 10000, "ReliefWeb-Zeit + GDELT-Wellen zusammen muessen unter Netlifys Funktionslimit bleiben");
+    console.log("  Dauer bei langsamem UCDP (1.5s) + haengendem GDELT:", (dt / 1000).toFixed(1) + "s");
+    assert.ok(dt < 10000, "UCDP-Zeit + GDELT-Wellen zusammen muessen unter Netlifys Funktionslimit bleiben");
     const levels = Object.values(report.countries).map((c) => c.level);
-    assert.ok(levels.some((l) => l === "nicht geprüft"), "Budget muss trotz vorgelagerter ReliefWeb-Zeit greifen");
-    console.log("Block 6/12 (Zeitbudget ab Funktionsstart, deckt ReliefWeb + GDELT zusammen ab): OK");
+    assert.ok(levels.some((l) => l === "nicht geprüft"), "Budget muss trotz vorgelagerter UCDP-Zeit greifen");
+    console.log("Block 6/14 (Zeitbudget ab Funktionsstart, deckt UCDP + GDELT zusammen ab): OK");
   }
 
-  // --- ReliefWeb: Statuswerte + Fehlertext des Servers ---
+  // --- UCDP: unbekannte Laendernamen werden uebersprungen, nicht abgestuerzt ---
   {
-    const seenUrls = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("ucdpapi.pcr.uu.se")) return { ok: true, status: 200, json: async () => ucdpBody([
+        { country: "Sudan", date_start: "2026-08-01" },
+        { country: "Nirgendland", date_start: "2026-08-01" }, // kein Alias bekannt
+        { country: null, date_start: "2026-08-01" },
+      ]) };
+      if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
+      throw new Error("unerwartet: " + u);
+    };
+    const { buildReport } = freshHandler()._internal;
+    const report = await buildReport();
+    assert.strictEqual(report.ucdpError, null, "unbekannte/fehlende Laendernamen duerfen die gesamte UCDP-Verarbeitung nicht zum Scheitern bringen");
+    assert.ok(report.countries.SDN && report.countries.SDN.ucdpActive, "das bekannte Land muss trotzdem verarbeitet werden");
+    console.log("Block 7/14 (UCDP: unbekannte Laendernamen werden uebersprungen): OK");
+  }
+
+  // --- UCDP: Ereignis-Array wird unabhaengig vom Antwort-Umschlag gefunden ---
+  {
+    for (const envelope of ["Result", "result", "nested", undefined]) {
+      global.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes("ucdpapi.pcr.uu.se")) return { ok: true, status: 200, json: async () => ucdpBody([{ country: "Syria", date_start: "2026-08-01" }], envelope) };
+        if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
+        throw new Error("unerwartet: " + u);
+      };
+      const { buildReport } = freshHandler()._internal;
+      const report = await buildReport();
+      assert.ok(report.countries.SYR && report.countries.SYR.ucdpActive, `Umschlag "${envelope}" muss erkannt werden`);
+    }
+    console.log("Block 8/14 (UCDP: Ereignis-Array wird umschlagunabhaengig gefunden): OK");
+  }
+
+  // --- ReliefWeb wird OHNE RELIEFWEB_APPNAME gar nicht erst angefragt ---
+  {
+    let reliefwebCalled = false;
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("reliefweb.int")) { reliefwebCalled = true; return { ok: true, status: 200, json: async () => ({ data: [] }) }; }
+      if (u.includes("ucdpapi.pcr.uu.se")) return { ok: true, status: 200, json: async () => ucdpBody([]) };
+      if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
+      throw new Error("unerwartet: " + u);
+    };
+    const { buildReport } = freshHandler()._internal;
+    const report = await buildReport();
+    assert.strictEqual(reliefwebCalled, false, "ohne genehmigten Appname darf ReliefWeb gar nicht erst angefragt werden (spart Zeitbudget fuer einen garantierten Fehlschlag)");
+    assert.ok(/RELIEFWEB_APPNAME/.test(report.reliefwebError));
+    console.log("Block 9/14 (ReliefWeb standardmaessig uebersprungen ohne Appname): OK");
+  }
+
+  // --- MIT RELIEFWEB_APPNAME: ReliefWeb ergaenzt ein von UCDP bereits bekanntes Land ---
+  {
+    process.env.RELIEFWEB_APPNAME = "mein-genehmigter-appname";
     global.fetch = async (url) => {
       const u = String(url);
       if (u.includes("reliefweb.int")) {
-        seenUrls.push(u);
-        return { ok: false, status: 400, text: async () => JSON.stringify({ error: { message: "Invalid value 'bogus' for filter[value]" } }) };
+        assert.ok(u.includes("appname=mein-genehmigter-appname"), "der genehmigte Appname muss in der URL stehen");
+        return { ok: true, status: 200, json: async () => ({ data: [
+          { fields: { name: "Sudan conflict escalation", date: { created: "2026-08-01T00:00:00" }, type: [{ name: "Complex Emergency" }], country: [{ iso3: "SDN", name: "Sudan" }] } },
+        ] }) };
       }
+      if (u.includes("ucdpapi.pcr.uu.se")) return { ok: true, status: 200, json: async () => ucdpBody([{ country: "Sudan", date_start: "2026-08-01" }]) };
       if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
       throw new Error("unerwartet: " + u);
     };
-    const { buildReport } = freshHandler()._internal;
+    delete require.cache[require.resolve(path)]; // NICHT freshHandler() - die loescht RELIEFWEB_APPNAME wieder
+    const { buildReport } = require(path)._internal;
     const report = await buildReport();
-
-    // Der frueher genutzte, ungueltige Statuswert darf nicht mehr vorkommen.
-    assert.ok(!seenUrls[0].includes("value%5B%5D=current") && !seenUrls[0].includes("value[]=current"),
-      "der Statuswert 'current' gehoert nicht zur disasters-Taxonomie und darf nicht mehr angefragt werden");
-    assert.ok(seenUrls[0].includes("ongoing"), "stattdessen muss 'ongoing' angefragt werden");
-    assert.strictEqual(seenUrls.length, 3, "bei durchgehendem 400 muessen alle drei Abfrageformen probiert werden (gefiltert, ungefiltert, ohne Feldauswahl)");
-    assert.ok(!seenUrls[1].includes("filter"), "der zweite Versuch muss ohne Statusfilter laufen");
-    assert.ok(!seenUrls[2].includes("fields"), "der dritte Versuch muss zusaetzlich ohne Feldauswahl laufen");
-    // Und die Begruendung des Servers muss bis ins UI durchkommen.
-    assert.ok(/Invalid value/.test(report.reliefwebError),
-      "der erklaerende Fehlertext des Servers muss in reliefwebError landen - sonst steht im UI nur 'HTTP 400'");
-    console.log("Block 7/12 (ReliefWeb: korrekte Statuswerte + Fehlertext durchgereicht): OK");
+    delete process.env.RELIEFWEB_APPNAME;
+    assert.strictEqual(report.reliefwebError, null);
+    assert.ok(report.countries.SDN.ucdpActive, "die UCDP-Flags duerfen durch ReliefWeb nicht verdraengt werden");
+    assert.ok(report.countries.SDN.reliefwebActive, "ReliefWeb-Flag muss zusaetzlich gesetzt sein");
+    assert.strictEqual(report.countries.SDN.reliefwebHeadline, "Sudan conflict escalation");
+    console.log("Block 10/14 (ReliefWeb ergaenzt ein UCDP-Land, ohne dessen Flags zu verdraengen): OK");
   }
 
-  // --- Timeout darf NICHT auf die ungefilterte Abfrage nachfassen (Zeitverschwendung) ---
+  // --- MIT RELIEFWEB_APPNAME: ReliefWeb fuegt ein Land hinzu, das UCDP nicht kennt ---
   {
-    let calls = 0;
-    global.fetch = async (url, opts) => {
+    process.env.RELIEFWEB_APPNAME = "mein-genehmigter-appname";
+    global.fetch = async (url) => {
       const u = String(url);
-      if (u.includes("reliefweb.int")) {
-        calls++;
-        return new Promise((_, reject) => { if (opts && opts.signal) opts.signal.addEventListener("abort", () => reject(new Error("aborted"))); });
-      }
+      if (u.includes("reliefweb.int")) return { ok: true, status: 200, json: async () => ({ data: [
+        { fields: { name: "Haiti gang violence", date: { created: "2026-08-01T00:00:00" }, type: [{ name: "Complex Emergency" }], country: [{ iso3: "HTI", name: "Haiti" }] } },
+      ] }) };
+      if (u.includes("ucdpapi.pcr.uu.se")) return { ok: true, status: 200, json: async () => ucdpBody([]) };
       if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
       throw new Error("unerwartet: " + u);
     };
-    const { buildReport } = freshHandler()._internal;
+    delete require.cache[require.resolve(path)];
+    const { buildReport } = require(path)._internal;
     const report = await buildReport();
-    assert.strictEqual(calls, 1, "bei einer Zeitueberschreitung darf NICHT nachgefasst werden - das wuerde nur ein zweites Timeout kosten");
-    assert.ok(report.reliefwebError, "der Fehler muss trotzdem sichtbar bleiben");
-    assert.ok(report.countries.RUS, "die feste Watchlist muss unabhaengig davon weiter funktionieren");
-    console.log("Block 8/12 (ReliefWeb: kein sinnloser zweiter Versuch nach Timeout): OK");
+    delete process.env.RELIEFWEB_APPNAME;
+    assert.ok(report.countries.HTI, "ein nur von ReliefWeb gemeldetes Land muss trotzdem in der Watchlist landen");
+    assert.strictEqual(report.countries.HTI.reliefwebActive, true);
+    assert.strictEqual(report.countries.HTI.ucdpActive, false);
+    console.log("Block 11/14 (ReliefWeb fuegt ein UCDP-unbekanntes Land hinzu): OK");
   }
 
-  // --- API-Version: v1 ist abgeschaltet, es darf nur noch v2 angefragt werden ---
+  // --- MIT RELIEFWEB_APPNAME: 410 beendet die ReliefWeb-Kette sofort ---
   {
+    process.env.RELIEFWEB_APPNAME = "mein-genehmigter-appname";
+    let rwCalls = 0;
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("reliefweb.int")) { rwCalls++; return { ok: false, status: 410, text: async () => '{"error":{"message":"decommissioned"}}' }; }
+      if (u.includes("ucdpapi.pcr.uu.se")) return { ok: true, status: 200, json: async () => ucdpBody([]) };
+      if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
+      throw new Error("unerwartet: " + u);
+    };
+    delete require.cache[require.resolve(path)];
+    const { buildReport } = require(path)._internal;
+    const report = await buildReport();
+    delete process.env.RELIEFWEB_APPNAME;
+    assert.strictEqual(rwCalls, 1, "ein 410 gilt fuer jede Abfrageform derselben Version - weitere Versuche waeren Zeitverschwendung");
+    assert.ok(/410/.test(report.reliefwebError));
+    console.log("Block 12/14 (ReliefWeb: 410 beendet die Kette sofort): OK");
+  }
+
+  // --- country.iso2 entfernt, Appname konfigurierbar (Live-Befund) ---
+  {
+    process.env.RELIEFWEB_APPNAME = "appname-eins";
     const seen = [];
     global.fetch = async (url) => {
       const u = String(url);
-      if (u.includes("reliefweb.int")) {
-        seen.push(u);
-        // Wie die echte API v1 antwortet - falls doch jemand v1 anfragt, faellt es auf.
-        if (u.includes("/v1/")) return { ok: false, status: 410, text: async () => JSON.stringify({ status: 410, error: { type: "Exception", message: "The API version 'v1' has been decommissioned. Please use version 'v2' instead." } }) };
-        return { ok: true, status: 200, json: async () => ({ data: [
-          { fields: { name: "Sudan: Complex Emergency", date: { created: "2026-08-01T00:00:00" }, type: [{ name: "Complex Emergency" }], country: [{ iso3: "SDN", iso2: "SD", name: "Sudan" }] } },
-        ] }) };
-      }
+      if (u.includes("reliefweb.int")) { seen.push(u); return { ok: true, status: 200, json: async () => ({ data: [] }) }; }
+      if (u.includes("ucdpapi.pcr.uu.se")) return { ok: true, status: 200, json: async () => ucdpBody([]) };
       if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
       throw new Error("unerwartet: " + u);
     };
-    const { buildReport } = freshHandler()._internal;
-    const report = await buildReport();
-    assert.ok(seen.length > 0, "ReliefWeb muss ueberhaupt angefragt werden");
-    assert.ok(seen.every((u) => u.includes("/v2/")), "es darf ausschliesslich API v2 angefragt werden - v1 ist abgeschaltet (HTTP 410)");
-    assert.strictEqual(report.reliefwebError, null);
-    assert.ok(report.countries.SDN && report.countries.SDN.reliefwebActive, "v2-Daten muessen normal verarbeitet werden");
-    console.log("Block 9/12 (nur API v2 wird angefragt): OK");
+    delete require.cache[require.resolve(path)];
+    await require(path)._internal.buildReport();
+    assert.ok(seen.length > 0 && seen.every((u) => !u.includes("country.iso2")),
+      "country.iso2 wird von ReliefWeb v2 abgelehnt (Live-Beleg: HTTP 400) und darf nicht mehr angefragt werden");
+    assert.ok(seen.every((u) => u.includes("appname=appname-eins")), "der gesetzte Appname muss verwendet werden");
+    delete process.env.RELIEFWEB_APPNAME;
+    console.log("Block 13/14 (country.iso2 entfernt, Appname aus RELIEFWEB_APPNAME uebernommen): OK");
   }
 
-  // --- 410 darf NICHT zu weiteren Versuchen fuehren (Version endgueltig weg) ---
+  // --- Unbekannter GDELT-/ReliefWeb-Fehler wird sichtbar, nicht verschluckt ---
   {
-    let calls = 0;
+    process.env.RELIEFWEB_APPNAME = "appname-eins";
     global.fetch = async (url) => {
       const u = String(url);
-      if (u.includes("reliefweb.int")) {
-        calls++;
-        return { ok: false, status: 410, text: async () => '{"error":{"message":"decommissioned"}}' };
-      }
-      if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
-      throw new Error("unerwartet: " + u);
-    };
-    const { buildReport } = freshHandler()._internal;
-    const report = await buildReport();
-    assert.strictEqual(calls, 1, "ein 410 gilt fuer jede Abfrageform derselben Version - weitere Versuche waeren Zeitverschwendung");
-    assert.ok(/410/.test(report.reliefwebError), "der 410 muss sichtbar bleiben");
-    console.log("Block 10/12 (410 beendet die Kette sofort): OK");
-  }
-
-  // --- Flache v2-Antwort (ohne fields-Umschlag) muss ebenfalls verarbeitet werden ---
-  {
-    global.fetch = async (url) => {
-      const u = String(url);
-      if (u.includes("reliefweb.int")) {
-        return { ok: true, status: 200, json: async () => ({ data: [
-          // Nutzdaten flach statt unter .fields, country als Objekt statt Array
-          { name: "Mali: Conflict", date: { created: "2026-07-20T00:00:00" }, type: { name: "Complex Emergency" }, country: { iso3: "MLI", iso2: "ML", name: "Mali" } },
-        ] }) };
-      }
-      if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
-      throw new Error("unerwartet: " + u);
-    };
-    const { buildReport } = freshHandler()._internal;
-    const report = await buildReport();
-    assert.ok(report.countries.MLI, "auch eine flache Antwortform muss zu einem Land fuehren");
-    assert.strictEqual(report.countries.MLI.reliefwebHeadline, "Mali: Conflict");
-    assert.strictEqual(report.countries.MLI.reliefwebType, "Complex Emergency");
-    assert.strictEqual(report.countries.MLI.reliefwebDate, "2026-07-20");
-    console.log("Block 11/12 (flaches v2-Format wird ebenfalls verstanden): OK");
-  }
-
-  // --- Unbekannter Antwortumschlag: Fehler statt stiller leerer Liste ---
-  {
-    global.fetch = async (url) => {
-      const u = String(url);
-      // Antwortet mit 200, aber ohne erkennbare Datenliste
       if (u.includes("reliefweb.int")) return { ok: true, status: 200, json: async () => ({ meta: { total: 0 }, unerwartet: true }) };
+      if (u.includes("ucdpapi.pcr.uu.se")) return { ok: true, status: 200, json: async () => ucdpBody([]) };
       if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
       throw new Error("unerwartet: " + u);
     };
-    const { buildReport } = freshHandler()._internal;
-    const report = await buildReport();
+    delete require.cache[require.resolve(path)];
+    const report = await require(path)._internal.buildReport();
+    delete process.env.RELIEFWEB_APPNAME;
     assert.ok(report.reliefwebError && /unerwartetes Antwortformat/.test(report.reliefwebError),
-      "ein unbekannter Umschlag darf nicht als 'keine Krisen weltweit' durchgehen, sondern muss als Fehler auffallen");
-    console.log("Block 12/12 (unbekanntes Antwortformat wird gemeldet, nicht verschluckt): OK");
+      "ein unbekannter ReliefWeb-Umschlag darf nicht als 'keine Krisen weltweit' durchgehen, sondern muss als Fehler auffallen");
+    console.log("Block 14/14 (unbekanntes ReliefWeb-Antwortformat wird gemeldet, nicht verschluckt): OK");
   }
 
   console.log("\nAlle geopolitics.js-Tests erfolgreich.");

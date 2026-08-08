@@ -13,6 +13,20 @@
 // reicht fuer den Zweck (Timeout-Sturm daempfen), ist aber kein verteilter
 // Schalter.
 
+// Live-Diagnose auf der echten Netlify-Instanz zeigte: fred.stlouisfed.org UND
+// api.gdeltproject.org (zwei unabhaengige Hosts) liefern beide nach exakt
+// PROBE_TIMEOUT ueberhaupt KEINE Antwort - kein HTTP-Status, keine Bytes,
+// reines Verstummen. Zwei unabhaengige Anbieter, die beide identisch "voll
+// aussitzen" statt mit Fehlerseite/Rate-Limit zu antworten, ist das klassische
+// Symptom von Node/undicis Happy-Eyeballs-Verhalten: loest ein Host zu einer
+// IPv6-Adresse auf, versucht Node zuerst IPv6 - hat die Serverless-Umgebung
+// aber kein funktionierendes IPv6-Egress, haengt der Verbindungsversuch, statt
+// sauber fehlzuschlagen. Node faellt normalerweise nach kurzer Zeit auf IPv4
+// zurueck, aber genau dieser Fallback ist in manchen Cloud-Umgebungen selbst
+// gestoert. `ipv4first` erzwingt bei der DNS-Aufloesung IPv4 zuerst - ohne
+// neue Abhaengigkeit, wirkt global fuer alle fetch()-Aufrufe dieser Instanz.
+require("dns").setDefaultResultOrder("ipv4first");
+
 const BREAKERS = new Map(); // name -> { fails, openUntil }
 const FAIL_THRESHOLD = 3;   // ab so vielen Fehlern in Folge wird geoeffnet
 const OPEN_MS = 5 * 60 * 1000; // so lange wird der Provider uebersprungen
