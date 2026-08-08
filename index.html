@@ -769,7 +769,9 @@ function DiagPanel({ diag, diagBusy, diagErr, runDiag }) {
               <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
                 <span style={{ color: C.white, fontSize: "var(--fs-sm)" }}>{p.label}</span>
                 <span style={{ color: col, fontSize: "var(--fs-xs)", whiteSpace: "nowrap" }}>
-                  {p.skipped ? "übersprungen" : (p.status != null ? "HTTP " + p.status : "kein Kontakt")}{p.ms != null ? ` · ${p.ms}ms` : ""}
+                  {p.skipped ? "übersprungen" : (p.status != null ? "HTTP " + p.status : "kein Kontakt")}
+                  {p.erwarteterStatus != null && (p.wieErwartet ? " (wie erwartet)" : ` (erwartet: ${p.erwarteterStatus})`)}
+                  {p.ms != null ? ` · ${p.ms}ms` : ""}
                 </span>
               </div>
               {p.error && <div style={{ color: C.red, fontSize: "var(--fs-xs)", marginTop: 3 }}>{p.error}{p.errorCause ? ` (${p.errorCause})` : ""}</div>}

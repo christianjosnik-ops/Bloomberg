@@ -49,7 +49,14 @@ async function fetchReliefWebOnce(url) {
     throw err;
   }
   const json = await res.json();
-  return Array.isArray(json && json.data) ? json.data : [];
+  // v1 liefert {data:[...]}. Sollte v2 den Umschlag anders benennen, hier die
+  // gaengigen Varianten mitnehmen, statt stillschweigend eine leere Liste
+  // zurueckzugeben (was wie "keine Krisen weltweit" ausgesehen haette).
+  if (Array.isArray(json && json.data)) return json.data;
+  if (Array.isArray(json && json.results)) return json.results;
+  if (Array.isArray(json && json.items)) return json.items;
+  if (Array.isArray(json)) return json;
+  throw new Error("ReliefWeb: unerwartetes Antwortformat, Schlüssel: " + (json && typeof json === "object" ? Object.keys(json).slice(0, 8).join(",") : typeof json));
 }
 
 function parseReliefWebItems(items) {
@@ -57,47 +64,68 @@ function parseReliefWebItems(items) {
   const byCountry = new Map();
   for (const item of items) {
     try {
-      const f = item.fields || {};
-      const countries = Array.isArray(f.country) ? f.country : [];
+      // v1 verpackt die Nutzdaten in item.fields. Falls v2 sie flach liefert,
+      // faellt das hier auf item selbst zurueck - so funktioniert derselbe
+      // Parser fuer beide Antwortformen.
+      const f = item.fields || item || {};
+      // country kann Objekt oder Array sein - beides zulassen.
+      const rawCountry = f.country;
+      const countries = Array.isArray(rawCountry) ? rawCountry : (rawCountry ? [rawCountry] : []);
       const country = countries.find((c) => c && c.iso3) || countries[0];
       if (!country || !country.iso3) continue;
       const iso3 = String(country.iso3).toUpperCase();
       if (byCountry.has(iso3)) continue; // erste (=juengste) Meldung je Land behalten
-      const typeName = Array.isArray(f.type) && f.type[0] ? f.type[0].name : null;
+      const rawType = f.type;
+      const types = Array.isArray(rawType) ? rawType : (rawType ? [rawType] : []);
+      const typeName = types[0] ? (types[0].name || null) : null;
+      const created = f.date && (f.date.created || f.date.changed);
       byCountry.set(iso3, {
         iso3, iso2: country.iso2 ? String(country.iso2).toUpperCase() : null, name: country.name || iso3,
         reliefwebActive: true, reliefwebType: typeName, reliefwebHeadline: f.name || null,
-        reliefwebDate: f.date && f.date.created ? String(f.date.created).slice(0, 10) : null,
+        reliefwebDate: created ? String(created).slice(0, 10) : null,
       });
     } catch (_) { /* einzelnen kaputten Eintrag ueberspringen, Rest verarbeiten */ }
   }
   return byCountry;
 }
 
-const RELIEFWEB_BASE = "https://api.reliefweb.int/v1/disasters"
+// API-VERSION: v1 ist abgeschaltet.
+// Live-Beleg aus dem Diagnose-Endpunkt auf der echten Netlify-Instanz:
+//   HTTP 410 – {"error":{"type":"Exception","message":"The API version 'v1' has
+//   been decommissioned. Please use version 'v2' instead."}}
+// Deshalb v2 als Hauptpfad. v1 wird NICHT mehr angefragt - ein 410 ist endgueltig
+// und ein weiterer Versuch waere reine Zeitverschwendung.
+const RELIEFWEB_FIELDS =
+  "&fields[include][]=name&fields[include][]=date.created&fields[include][]=type.name"
+  + "&fields[include][]=country.iso3&fields[include][]=country.iso2&fields[include][]=country.name";
+const RELIEFWEB_BASE = "https://api.reliefweb.int/v2/disasters"
   + "?appname=terminal-app-geopolitics"
-  + "&fields[include][]=name&fields[include][]=date.created&fields[include][]=type.name&fields[include][]=country.iso3&fields[include][]=country.iso2&fields[include][]=country.name"
+  + RELIEFWEB_FIELDS
   + "&sort[]=date.created:desc&limit=100";
-// Statuswerte des disasters-Endpunkts sind "alert", "ongoing" und "past".
-// Bisher stand hier "current" - ein Wert, den diese Taxonomie nicht kennt und
-// der die Abfrage vermutlich mit HTTP 400 hat scheitern lassen (was im UI als
-// "ReliefWeb nicht erreichbar" ankam). Die Rueckfallkette unten faengt einen
-// solchen Fehler jetzt zusaetzlich ab, egal welcher Wert kuenftig falsch ist.
+// Statuswerte des disasters-Endpunkts: "alert", "ongoing", "past".
 const RELIEFWEB_FILTERED = RELIEFWEB_BASE + "&filter[field]=status&filter[value][]=alert&filter[value][]=ongoing";
+// Ohne fields[include]: falls v2 die Feldauswahl anders benennt, liefert die
+// nackte Abfrage immer noch verwertbare Datensaetze (nur groesser).
+const RELIEFWEB_MINIMAL = "https://api.reliefweb.int/v2/disasters?appname=terminal-app-geopolitics&limit=100";
 
 async function fetchReliefWeb() {
   const attempts = [];
-  // Reihenfolge: praezise gefiltert -> ungefiltert. Die ungefilterte Abfrage
-  // liefert auch abgeschlossene Krisen mit, ist also schlechter - aber deutlich
-  // besser als gar keine ReliefWeb-Daten, nur weil ein Filterwort nicht passt.
-  for (const url of [RELIEFWEB_FILTERED, RELIEFWEB_BASE]) {
+  // Reihenfolge: praezise gefiltert -> ungefiltert -> ohne Feldauswahl.
+  // Jede Stufe ist etwas schlechter als die vorige, aber jede ist deutlich
+  // besser als gar keine ReliefWeb-Daten.
+  for (const url of [RELIEFWEB_FILTERED, RELIEFWEB_BASE, RELIEFWEB_MINIMAL]) {
     try {
       return parseReliefWebItems(await fetchReliefWebOnce(url));
     } catch (e) {
       attempts.push(String((e && e.message) || e));
-      // Nur bei "falsche Anfrage" lohnt der naechste Versuch. Timeouts oder
-      // 5xx wuerden nur ein weiteres Zeitbudget verbrennen.
-      const retryable = e && e.status >= 400 && e.status < 500;
+      // Nur bei Problemen mit der ANFRAGEFORM lohnt eine andere Abfrageform.
+      // Ausdruecklich NICHT bei:
+      //   410 - Version endgueltig abgeschaltet: gilt fuer jede Abfrageform
+      //         derselben Version, ein weiterer Versuch ist reine Zeitverschwendung
+      //   401/403 - Berechtigung fehlt: aendert sich durch andere Parameter nicht
+      //   Timeouts/5xx - Gegenstelle ist das Problem, nicht die Anfrage
+      const s = e && e.status;
+      const retryable = s === 400 || s === 404 || s === 422;
       if (!retryable) break;
     }
   }
