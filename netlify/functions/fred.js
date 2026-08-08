@@ -18,18 +18,27 @@ const CACHE = new Map(); const TTL = 10 * 60 * 1000; // 10 Min
 // Bekannte Serien: passender Ruecklauf-Zeitraum je nach Frequenz (Tages-/Monats-/Quartalsdaten).
 const DEFAULT_YEARS = { UNRATE: 10, CPIAUCSL: 10, FEDFUNDS: 10, DGS10: 1, T10Y2Y: 1, GDP: 30, PAYEMS: 10, UMCSENT: 10, MORTGAGE30US: 3, M2SL: 10 };
 
-// Feste Provider-Timeouts sind hier bewusst NICHT die einzige Bremse: fetchOne()
-// bekommt zusaetzlich ein gemeinsames deadline ueber ALLE Serien und Wellen
-// hinweg, gegen das jeder Provider-Aufruf seinen eigenen Timeout zusaetzlich
-// kappt. Ohne das konnte eine einzelne Serie im Worst Case (FRED-Timeout +
-// DBnomics ueber 2 Kandidaten) schon fast 10s brauchen - mal 4 Wellen fuer die
-// 10 Makro-Serien haette das Netlify-Funktionslimit (Standard 10s) klar
-// gerissen und die GANZE Antwort waere verlorengegangen statt nur einzelner
-// Serien, die dann als "nicht verfuegbar" markiert werden.
-const FRED_CSV_TIMEOUT = 3000;
+// Zeitbudget - Hintergrund aus dem Livebetrieb:
+//
+// Zuvor holte diese Function jede Serie EINZELN (10 Anfragen in 4 Wellen). Damit
+// das unter Netlifys 10s-Limit passte, war der FRED-Timeout auf 3000ms gedrueckt -
+// zu knapp: In der Diagnose meldete jede Serie "fred: Timeout nach 3000ms", und
+// nach drei Fehlschlaegen machte der Circuit Breaker die restlichen sechs Serien
+// gleich mit ("circuit-open"). Ergebnis: F4 MAKRO komplett leer.
+//
+// Loesung: fredgraph.csv kann MEHRERE Serien in einer einzigen Antwort liefern
+// (id=UNRATE,CPIAUCSL,...). Ein Abruf statt zehn - dadurch ist ein grosszuegiger
+// Timeout problemlos im Budget, und ein einzelner langsamer Abruf kann keine
+// Kaskade mehr ausloesen.
+const FRED_BATCH_TIMEOUT = 6000;  // ein Sammelabruf fuer alle Serien
+const FRED_CSV_TIMEOUT = 4000;    // Einzelabruf, nur noch als Rueckfallebene
 const DBNOMICS_TIMEOUT = 2500;
-const FUNCTION_BUDGET_MS = 8500; // Sicherheitsabstand unter Netlifys 10s-Standardlimit
-const MIN_ATTEMPT_MS = 500; // unter dieser Restzeit lohnt kein weiterer Versuch mehr
+const FUNCTION_BUDGET_MS = 9000;  // Sicherheitsabstand unter Netlifys 10s-Standardlimit
+const MIN_ATTEMPT_MS = 500;       // unter dieser Restzeit lohnt kein weiterer Versuch mehr
+// Gemeinsames Startdatum fuer den Sammelabruf. Angezeigt werden ohnehin nur die
+// letzten ~90 Punkte je Serie (siehe shapeSeries), deshalb reicht ein Fenster,
+// das auch fuer Quartalsdaten wie GDP genug Punkte liefert.
+const BATCH_YEARS = 12;
 
 function timeLeft(deadline) { return deadline - Date.now(); }
 
@@ -55,7 +64,59 @@ function shapeSeries(id, rows) {
   };
 }
 
-// --- Provider 1: FRED CSV -------------------------------------------------
+// Erkennt eine Sperr-/Fehlerseite, die FRED auch mal mit Status 200 ausliefert.
+function assertLooksLikeCsv(txt) {
+  const head = txt.slice(0, 200).trim();
+  if (/^\s*</.test(head)) throw new Error("FRED lieferte HTML statt CSV (vermutlich Bot-Sperre): " + head.replace(/\s+/g, " ").slice(0, 120));
+}
+
+// --- Provider 0: FRED CSV als SAMMELABRUF (Hauptweg) -----------------------
+// fredgraph.csv?id=A,B,C liefert eine Tabelle mit einer Spalte je Serie:
+//   DATE,UNRATE,CPIAUCSL
+//   2020-01-01,3.5,257.9
+//   2020-02-01,3.5,.          <- "." = kein Wert an diesem Datum
+// Fehlende Werte entstehen zwangslaeufig, weil die Serien unterschiedliche
+// Frequenzen haben (taeglich/monatlich/quartalsweise) und hier auf ein
+// gemeinsames Datumsraster gelegt werden. Sie werden je Spalte uebersprungen.
+async function fromFredCsvBatch(ids, timeoutMs) {
+  const cosd = new Date(); cosd.setFullYear(cosd.getFullYear() - BATCH_YEARS);
+  const url = `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(ids.join(","))}&cosd=${cosd.toISOString().slice(0, 10)}`;
+  const res = await fetchWithTimeout(url, { headers: BROWSER_HEADERS }, timeoutMs || FRED_BATCH_TIMEOUT);
+  if (!res.ok) {
+    let detail = "";
+    try { detail = (await res.text()).slice(0, 150).replace(/\s+/g, " ").trim(); } catch (_) {}
+    throw new Error(`FRED-Sammelabruf HTTP ${res.status}${detail ? " – " + detail : ""}`);
+  }
+  const txt = await res.text();
+  assertLooksLikeCsv(txt);
+  const lines = txt.trim().split(/\r?\n/);
+  if (lines.length < 3) throw new Error(`FRED-Sammelabruf: zu wenige Zeilen (${lines.length}) – Inhalt: ${txt.slice(0, 120).replace(/\s+/g, " ")}`);
+
+  // Kopfzeile: erste Spalte ist das Datum, danach je Serie eine Spalte. Die
+  // Reihenfolge/Schreibweise wird NICHT angenommen, sondern aus dem Kopf gelesen -
+  // FRED benennt die Datumsspalte je nach Endpunkt "DATE" oder "observation_date".
+  const header = lines[0].split(",").map((h) => h.trim().toUpperCase());
+  const colOf = {};
+  for (const id of ids) { const i = header.indexOf(id.toUpperCase()); if (i > 0) colOf[id] = i; }
+  if (!Object.keys(colOf).length) throw new Error("FRED-Sammelabruf: keine der angefragten Serien in der Kopfzeile gefunden – Kopf: " + lines[0].slice(0, 150));
+
+  const rowsById = {}; for (const id of Object.keys(colOf)) rowsById[id] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i].split(",");
+    const t = (parts[0] || "").trim();
+    if (!t) continue;
+    for (const id of Object.keys(colOf)) {
+      const v = parseFloat(parts[colOf[id]]);
+      if (!isNaN(v)) rowsById[id].push({ t, v });
+    }
+  }
+  const out = {};
+  for (const id of Object.keys(rowsById)) { const shaped = shapeSeries(id, rowsById[id]); if (shaped) out[id] = shaped; }
+  if (!Object.keys(out).length) throw new Error("FRED-Sammelabruf: keine verwertbaren Datenzeilen");
+  return out;
+}
+
+// --- Provider 1: FRED CSV, Einzelabruf (Rueckfallebene) --------------------
 async function fromFredCsv(id, years, timeoutMs) {
   const cosd = new Date(); cosd.setFullYear(cosd.getFullYear() - years);
   const url = `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(id)}&cosd=${cosd.toISOString().slice(0, 10)}`;
@@ -110,12 +171,20 @@ function findObservations(node, depth) {
 }
 
 async function fromDbnomics(id, years, deadline) {
+  // Aus der Live-Diagnose gelernt: series_ids=FRED/UNRATE (zwei Segmente) wird
+  // mit HTTP 400 abgelehnt - DBnomics erwartet provider/dataset/serie, also
+  // DREI Segmente. Die zweisegmentige Form ist deshalb raus.
+  //
+  // Welcher Dataset-Code fuer die FRED-Spiegelung gilt, laesst sich hier nicht
+  // pruefen (api.db.nomics.world ist aus der Entwicklungsumgebung gesperrt),
+  // deshalb mehrere plausible Formen. Die Diagnose-Function probt dieselben
+  // Varianten einzeln durch und zeigt, welche traegt.
+  const enc = encodeURIComponent(id);
   const candidates = [
-    // Wahrscheinlichste Form zuerst: bei DBnomics ist fuer FRED-gespiegelte Serien
-    // der Dataset-Code oft identisch zur eigentlichen Serien-ID (3-Segment-Pfad).
-    `https://api.db.nomics.world/v22/series/FRED/${encodeURIComponent(id)}/${encodeURIComponent(id)}?observations=1`,
-    `https://api.db.nomics.world/v22/series/FRED/${encodeURIComponent(id)}?observations=1`,
-    `https://api.db.nomics.world/v22/series?series_ids=FRED/${encodeURIComponent(id)}&observations=1`,
+    `https://api.db.nomics.world/v22/series/FRED/${enc}/${enc}?observations=1`,
+    `https://api.db.nomics.world/v22/series?series_ids=FRED/${enc}/${enc}&observations=1`,
+    // Suchweg: findet die Serie ueber den Provider, ohne den Dataset-Code zu kennen.
+    `https://api.db.nomics.world/v22/search?q=${enc}&provider_code=FRED&observations=1&limit=1`,
   ];
   let lastErr = null;
   for (const url of candidates) {
@@ -196,31 +265,63 @@ exports.handler = async (event) => {
   if (!ids.length || ids.some((id) => !/^[A-Z0-9]{1,20}$/.test(id))) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: "id ungueltig" }) };
 
   try {
-    // Begrenzte Parallelitaet statt Promise.all ueber alle Serien: Wenn eine Quelle
-    // tot ist, laeuft sonst JEDE Serie gleichzeitig in ihr eigenes Timeout, weil alle
-    // starten bevor die erste einen Fehler gemeldet hat - der Circuit Breaker greift
-    // dann erst beim naechsten Seitenaufruf. Mit Wellen von 3 loest die erste Welle
-    // den Breaker aus und alle uebrigen Serien brechen sofort ab.
-    //
-    // Zusaetzlich ein gemeinsames Zeitbudget UEBER ALLE Wellen hinweg (siehe
-    // FUNCTION_BUDGET_MS oben): ohne das konnte im Worst Case eine einzelne
-    // Welle schon fast das Netlify-Funktionslimit ausschoepfen, wodurch die
-    // GESAMTE Antwort verlorenging statt nur einzelner Serien.
     const deadline = Date.now() + FUNCTION_BUDGET_MS;
     const results = [];
+
+    // SCHRITT 1: Ein einziger Sammelabruf fuer alle Serien. Das ist der Normalweg
+    // und ersetzt die frueheren zehn Einzelanfragen samt Timeout-Kaskade.
+    const stillMissing = [];
+    const cachedHits = {};
+    for (const id of ids) {
+      const years = Math.min(50, Math.max(1, parseInt(qp.years || DEFAULT_YEARS[id] || 10, 10) || 10));
+      const c = CACHE.get(`${id}:${years}`);
+      if (c && Date.now() - c.ts < TTL) cachedHits[id] = c.data; else stillMissing.push(id);
+    }
+
+    let batchError = null;
+    if (stillMissing.length) {
+      try {
+        const budget = Math.max(MIN_ATTEMPT_MS, Math.min(FRED_BATCH_TIMEOUT, timeLeft(deadline)));
+        const batch = await fromFredCsvBatch(stillMissing, budget);
+        for (const id of Object.keys(batch)) {
+          const years = Math.min(50, Math.max(1, parseInt(qp.years || DEFAULT_YEARS[id] || 10, 10) || 10));
+          const data = Object.assign({}, batch[id], { source: "fred" });
+          CACHE.set(`${id}:${years}`, { ts: Date.now(), data });
+          cachedHits[id] = data;
+        }
+      } catch (e) {
+        batchError = String((e && e.message) || e);
+      }
+    }
+
+    for (const id of ids) if (cachedHits[id]) results.push([id, cachedHits[id]]);
+    const remaining = ids.filter((id) => !cachedHits[id]);
+
+    // SCHRITT 2: Nur was der Sammelabruf nicht abgedeckt hat, einzeln nachholen -
+    // in Wellen und weiterhin gegen dasselbe Gesamt-Zeitbudget. Der Grund des
+    // Sammel-Fehlschlags wird angehaengt, damit im UI nicht nur der Einzelfehler
+    // steht, sondern auch warum der Hauptweg nicht griff.
     const CONCURRENCY = 3;
-    for (let i = 0; i < ids.length; i += CONCURRENCY) {
+    for (let i = 0; i < remaining.length; i += CONCURRENCY) {
       if (timeLeft(deadline) < MIN_ATTEMPT_MS) {
-        for (const id of ids.slice(i)) results.push([id, { id, error: "Zeitbudget erreicht" }]);
+        for (const id of remaining.slice(i)) {
+          results.push([id, { id, error: "Zeitbudget erreicht" + (batchError ? " (Sammelabruf zuvor: " + batchError + ")" : "") }]);
+        }
         break;
       }
-      const wave = ids.slice(i, i + CONCURRENCY);
+      const wave = remaining.slice(i, i + CONCURRENCY);
       const settled = await Promise.all(wave.map(async (id) => {
         try { return [id, await fetchOne(id, qp.years, deadline)]; } catch (e) { return [id, { id, error: String(e && e.message || e) }]; }
       }));
       results.push(...settled);
     }
+
     const out = Object.fromEntries(results);
+    if (batchError) {
+      for (const id of Object.keys(out)) {
+        if (out[id] && out[id].error) out[id].error += " | Sammelabruf: " + batchError;
+      }
+    }
     if (!isBatch) return { statusCode: 200, headers: cors, body: JSON.stringify(out[ids[0]]) };
     return { statusCode: 200, headers: { ...cors, "X-Breakers": JSON.stringify(breakerState()) }, body: JSON.stringify(out) };
   } catch (e) {
@@ -229,4 +330,4 @@ exports.handler = async (event) => {
 };
 
 // Fuer Tests: Einzelfunktionen ohne HTTP-Handler-Wrapper zugaenglich machen.
-exports._internal = { fetchOne, fromFredCsv, fromDbnomics, shapeSeries, findObservations, FUNCTION_BUDGET_MS, MIN_ATTEMPT_MS };
+exports._internal = { fetchOne, fromFredCsv, fromFredCsvBatch, fromDbnomics, shapeSeries, findObservations, FUNCTION_BUDGET_MS, MIN_ATTEMPT_MS, BATCH_YEARS };

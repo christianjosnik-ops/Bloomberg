@@ -43,21 +43,43 @@ const PROBES = [
     expect: (body) => /^[^\n]*\n\d{4}-\d{2}-\d{2},/.test(body.trim()) ? null : "sieht nicht nach FRED-CSV aus (Bot-Sperre oder HTML-Antwort?)",
   },
   {
-    key: "dbnomics-3seg",
-    label: "DBnomics Kandidat 1 (Pfad mit 3 Segmenten)",
+    // Der eigentliche Hauptweg seit dem Timeout-Befund: EIN Abruf fuer alle
+    // Serien statt zehn einzelne. Wenn diese Probe traegt, ist F4 MAKRO gesund.
+    key: "fred-csv-sammel",
+    label: "FRED CSV SAMMELABRUF (Hauptweg – alle Serien in einer Antwort)",
+    url: "https://fred.stlouisfed.org/graph/fredgraph.csv?id=UNRATE,CPIAUCSL,FEDFUNDS,DGS10,T10Y2Y,GDP,PAYEMS,UMCSENT,MORTGAGE30US,M2SL&cosd=2014-01-01",
+    headers: { "User-Agent": UA, "Accept": "text/csv,text/plain,*/*", "Accept-Language": "en-US,en;q=0.9", "Referer": "https://fred.stlouisfed.org/" },
+    expect: (body) => {
+      const head = (body.split(/\r?\n/)[0] || "").toUpperCase();
+      const fehlend = ["UNRATE", "CPIAUCSL", "GDP"].filter((id) => !head.includes(id));
+      return fehlend.length ? "Kopfzeile enthaelt diese Serien nicht: " + fehlend.join(", ") : null;
+    },
+  },
+  {
+    key: "dbnomics-pfad-3seg",
+    label: "DBnomics Kandidat 1 (Pfad, 3 Segmente)",
     url: "https://api.db.nomics.world/v22/series/FRED/UNRATE/UNRATE?observations=1",
     headers: { "Accept": "application/json", "User-Agent": UA },
   },
   {
-    key: "dbnomics-2seg",
-    label: "DBnomics Kandidat 2 (Pfad mit 2 Segmenten)",
-    url: "https://api.db.nomics.world/v22/series/FRED/UNRATE?observations=1",
+    key: "dbnomics-ids-3seg",
+    label: "DBnomics Kandidat 2 (series_ids, 3 Segmente)",
+    url: "https://api.db.nomics.world/v22/series?series_ids=FRED/UNRATE/UNRATE&observations=1",
     headers: { "Accept": "application/json", "User-Agent": UA },
   },
   {
-    key: "dbnomics-query",
-    label: "DBnomics Kandidat 3 (series_ids-Abfrage)",
+    // Beleg-Probe: genau diese Form lieferte im Livebetrieb HTTP 400
+    // ("series_ids":["FRED/UNRATE"]). Bleibt drin, um den Befund festzuhalten.
+    key: "dbnomics-ids-2seg-ungueltig",
+    label: "DBnomics mit 2 Segmenten (ungültig – erwartet HTTP 400)",
     url: "https://api.db.nomics.world/v22/series?series_ids=FRED/UNRATE&observations=1",
+    headers: { "Accept": "application/json", "User-Agent": UA },
+    expectStatus: 400,
+  },
+  {
+    key: "dbnomics-suche",
+    label: "DBnomics Kandidat 3 (Suche über den Provider)",
+    url: "https://api.db.nomics.world/v22/search?q=UNRATE&provider_code=FRED&observations=1&limit=1",
     headers: { "Accept": "application/json", "User-Agent": UA },
   },
   {
