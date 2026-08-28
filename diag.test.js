@@ -131,18 +131,29 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     console.log("Block 8/9 (abweichender Status wird als Abweichung gemeldet): OK");
   }
 
-  // --- Euro-Raum-Makro-Probe: prueft, welche der vermuteten FRED-Serien-IDs
-  //     fuer die EZB-/OECD-Reihen tatsaechlich existieren ---
+  // --- Euro-Raum-Makro-Probe: prueft BEIDES - ob die Serien-IDs existieren UND
+  //     ob die Daten aktuell sind. Der zweite Teil ist der wichtigere: die
+  //     zuvor genutzten OECD-Serien existierten durchaus, lieferten aber Werte
+  //     von 2023, die im UI wie frische Daten aussahen. ---
   {
     const { PROBES } = fresh()._internal;
     const p = PROBES.find((x) => x.key === "fred-csv-euro");
     assert.ok(p, "die Euro-Raum-Makro-Probe muss existieren");
-    assert.strictEqual(p.expect("DATE,ECBDFR,EA19CPALTT01GYM,LRHUTTTTEZM156S,IRLTLT01DEM156N\n2026-01-01,3.75,2.4,6.4,2.51"), null,
-      "stehen alle vier IDs in der Kopfzeile, darf keine Warnung entstehen");
-    const warnFehlt = p.expect("DATE,ECBDFR\n2026-01-01,3.75");
-    assert.ok(warnFehlt && /EA19CPALTT01GYM/.test(warnFehlt) && /LRHUTTTTEZM156S/.test(warnFehlt) && /IRLTLT01DEM156N/.test(warnFehlt),
-      "fehlende Serien-IDs muessen einzeln benannt werden, damit klar ist, welche vermutete ID falsch war");
-    console.log("Block 9/9a (Euro-Raum-Makro-Probe benennt fehlende Serien-IDs einzeln): OK");
+
+    const heute = new Date().toISOString().slice(0, 10);
+    const kopf = "DATE,ECBDFR,CP0000EZ19M086NEST,IRLTLT01DEM156N,CLVMEURSCAB1GQEA19";
+    assert.strictEqual(p.expect(`${kopf}\n${heute},3.75,132.4,2.51,3010`), null,
+      "aktuelle Daten mit allen vier IDs duerfen keine Warnung ergeben");
+
+    const warnFehlt = p.expect(`DATE,ECBDFR\n${heute},3.75`);
+    assert.ok(warnFehlt && /CP0000EZ19M086NEST/.test(warnFehlt) && /IRLTLT01DEM156N/.test(warnFehlt) && /CLVMEURSCAB1GQEA19/.test(warnFehlt),
+      "fehlende Serien-IDs muessen einzeln benannt werden, damit klar ist, welche ID nicht existiert");
+
+    // Genau das Szenario der eingestellten OECD-Serie: IDs alle da, Daten alt.
+    const warnAlt = p.expect(`${kopf}\n2023-01-01,3.75,132.4,2.51,3010`);
+    assert.ok(warnAlt && /eingestellt/.test(warnAlt),
+      "vorhandene IDs mit jahrealten Daten muessen als vermutlich eingestellt gemeldet werden - sonst wiederholt sich der LRHUTTTTEZM156S-Fall");
+    console.log("Block 9/9a (Euro-Probe prueft Existenz UND Aktualitaet der Serien): OK");
   }
 
   // --- Appname per Umgebungsvariable: Live-Befund HTTP 403 "not using an
@@ -169,11 +180,26 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
 
   // --- UCDP: die neue Hauptquelle fuer F6 hat eigene Beleg-Proben ---
   {
+    const { PROBES } = fresh()._internal;
+    // Die Versionsstrings der Proben muessen dem aktuellen Datum folgen, nicht
+    // hartkodiert sein - sonst diagnostiziert die Probe ab naechstem Monat eine
+    // andere Version als die, die geopolitics.js tatsaechlich abfragt.
+    const jetzt = new Date();
+    const vAktuell = `${jetzt.getUTCFullYear() % 100}.0.${jetzt.getUTCMonth() + 1}`;
+    const pAktuell = PROBES.find((x) => x.key === "ucdp-monat-aktuell");
+    assert.ok(pAktuell && pAktuell.url.includes(`/gedevents/${vAktuell}?`),
+      `die Probe muss die aus dem Datum erzeugte Version ${vAktuell} abfragen, nicht eine hartkodierte: ${pAktuell && pAktuell.url}`);
+    // Antwortform: Result-Array mit country-Feld (aus der UCDP-Doku belegt)
+    assert.strictEqual(pAktuell.expect(JSON.stringify({ TotalCount: 2, Result: [{ id: 1, country: "Sudan" }] })), null,
+      "eine gueltige UCDP-Antwort darf keine Warnung ergeben");
+    assert.ok(/Result-Array/.test(pAktuell.expect(JSON.stringify({ foo: 1 }))),
+      "fehlt das Result-Array, muss das benannt werden");
+
     const res = await fresh().handler({ httpMethod: "GET", queryStringParameters: { only: "ucdp" } });
     const body = JSON.parse(res.body);
-    assert.strictEqual(body.proben.length, 2, "only=ucdp muss beide UCDP-Kandidaten auswaehlen (Candidate Events + GED)");
-    assert.ok(body.proben.some((p) => p.key === "ucdp-candidateevents") && body.proben.some((p) => p.key === "ucdp-gedevents"));
-    console.log("Block 10/11 (UCDP-Beleg-Proben vorhanden und ueber only=ucdp filterbar): OK");
+    assert.strictEqual(body.proben.length, 2, "only=ucdp muss beide Monatsproben auswaehlen (laufender Monat + Vormonat)");
+    assert.ok(body.proben.some((p) => p.key === "ucdp-monat-aktuell") && body.proben.some((p) => p.key === "ucdp-monat-vormonat"));
+    console.log("Block 10/11 (UCDP-Proben folgen dem aktuellen Datum und pruefen die Antwortform): OK");
   }
 
   // --- GDELT-Timeline-Probe: erkennt eine date/value-Zeitreihe im Antwortkoerper ---

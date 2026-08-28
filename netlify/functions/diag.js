@@ -75,38 +75,59 @@ const PROBES = [
   },
   {
     // Euro-Raum-Serien laufen ueber denselben FRED-Sammelabruf wie die
-    // US-Serien (FRED spiegelt OECD-/EZB-Reihen unter regulaeren FRED-IDs) -
-    // kein zweiter Provider noetig. Die exakten Serien-IDs sind plausibel,
-    // aber ungetestet; diese Probe zeigt, welche davon tatsaechlich existieren.
+    // US-Serien (FRED spiegelt Eurostat-/EZB-Reihen unter regulaeren FRED-IDs) -
+    // kein zweiter Provider noetig.
+    //
+    // Die Probe prueft ZWEI Dinge, nicht nur eines: ob die IDs in der Kopfzeile
+    // auftauchen UND ob die juengste Datenzeile ueberhaupt aus juengerer Zeit
+    // stammt. Der zweite Teil ist der wichtigere - die vorher genutzten
+    // OECD-Serien existierten durchaus, lieferten aber Werte von 2023.
     key: "fred-csv-euro",
-    label: "FRED CSV Euro-Raum (EZB-Einlagensatz, HVPI, Arbeitslosenquote, Bund-Rendite)",
-    url: "https://fred.stlouisfed.org/graph/fredgraph.csv?id=ECBDFR,EA19CPALTT01GYM,LRHUTTTTEZM156S,IRLTLT01DEM156N&cosd=2014-01-01",
+    label: "FRED CSV Euro-Raum (EZB-Satz, HVPI, Bund-Rendite, Euro-BIP)",
+    url: "https://fred.stlouisfed.org/graph/fredgraph.csv?id=ECBDFR,CP0000EZ19M086NEST,IRLTLT01DEM156N,CLVMEURSCAB1GQEA19&cosd=2014-01-01",
     headers: { "User-Agent": UA, "Accept": "text/csv,text/plain,*/*", "Accept-Language": "en-US,en;q=0.9", "Referer": "https://fred.stlouisfed.org/" },
     expect: (body) => {
-      const head = (body.split(/\r?\n/)[0] || "").toUpperCase();
-      const fehlend = ["ECBDFR", "EA19CPALTT01GYM", "LRHUTTTTEZM156S", "IRLTLT01DEM156N"].filter((id) => !head.includes(id));
-      return fehlend.length ? "Kopfzeile enthaelt diese Serien-IDs nicht (existieren evtl. unter anderem Code): " + fehlend.join(", ") : null;
+      const zeilen = body.trim().split(/\r?\n/);
+      const head = (zeilen[0] || "").toUpperCase();
+      const fehlend = ["ECBDFR", "CP0000EZ19M086NEST", "IRLTLT01DEM156N", "CLVMEURSCAB1GQEA19"].filter((id) => !head.includes(id));
+      if (fehlend.length) return "Kopfzeile enthaelt diese Serien-IDs nicht: " + fehlend.join(", ");
+      const letzteZeile = zeilen[zeilen.length - 1] || "";
+      const datum = (letzteZeile.split(",")[0] || "").trim();
+      const ts = Date.parse(datum + "T00:00:00Z");
+      if (isNaN(ts)) return "letzte Zeile beginnt nicht mit einem Datum: " + letzteZeile.slice(0, 60);
+      const tage = Math.floor((Date.now() - ts) / 864e5);
+      return tage > 400 ? `juengstes Datum im Sammelabruf ist ${datum} (${tage} Tage alt) – mindestens eine Serie duerfte eingestellt sein` : null;
     },
   },
-  {
-    // UCDP ist seit dem Appname-Befund (siehe reliefweb-v2-minimal weiter
-    // unten) die Hauptquelle fuer die dynamische Laenderliste in F6 WELTLAGE.
-    // Kandidat 1: woechentlich aktualisierte, noch nicht endgueltig gepruefte
-    // Ereignisse. Pfad-/Versionsschema ungetestet - reine Erreichbarkeits-
-    // und Formpruefung.
-    key: "ucdp-candidateevents",
-    label: "UCDP Kandidat 1 (Candidate Events, woechentlich aktualisiert)",
-    url: "https://ucdpapi.pcr.uu.se/api/candidateevents/24.01.24?pagesize=5&page=0",
-    headers: { "Accept": "application/json", "User-Agent": UA },
-  },
-  {
-    // Kandidat 2: jaehrlich veroeffentlichter, endgueltig gepruefter Datensatz
-    // (Georeferenced Event Dataset) - traeger, aber stabileres Schema.
-    key: "ucdp-gedevents",
-    label: "UCDP Kandidat 2 (Georeferenced Event Dataset, jaehrlich)",
-    url: "https://ucdpapi.pcr.uu.se/api/gedevents/24.1?pagesize=5&page=0",
-    headers: { "Accept": "application/json", "User-Agent": UA },
-  },
+  // UCDP ist die Hauptquelle fuer die dynamische Laenderliste in F6 WELTLAGE.
+  // Die Monats-Candidate-Version WANDERT (Schema JJ.0.M) - deshalb werden die
+  // beiden zuletzt plausiblen Monate geprobt, genau wie geopolitics.js sie
+  // rueckwaerts durchlaeuft. Erwartungsgemaess antwortet der aktuelle Monat
+  // haeufig mit 404 (noch nicht veroeffentlicht) und der Vormonat mit 200.
+  ...(function ucdpProben() {
+    const d = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
+    const proben = [];
+    for (let i = 0; i < 2; i++) {
+      const v = `${d.getUTCFullYear() % 100}.0.${d.getUTCMonth() + 1}`;
+      proben.push({
+        key: `ucdp-monat-${i === 0 ? "aktuell" : "vormonat"}`,
+        label: `UCDP Candidate ${v} (${i === 0 ? "laufender Monat – 404 ist hier normal" : "Vormonat – hier sollten Daten kommen"})`,
+        url: `https://ucdpapi.pcr.uu.se/api/gedevents/${v}?pagesize=5&page=0`,
+        headers: { "Accept": "application/json", "User-Agent": UA },
+        expect: (body) => {
+          try {
+            const j = JSON.parse(body);
+            const arr = j && Array.isArray(j.Result) ? j.Result : null;
+            if (!arr) return "kein Result-Array in der Antwort – Umschlag hat sich geaendert?";
+            if (!arr.length) return "Result-Array ist leer";
+            return "country" in arr[0] ? null : "Ereignisse haben kein country-Feld: " + Object.keys(arr[0]).slice(0, 8).join(", ");
+          } catch (e) { return "Antwort ist kein gueltiges JSON: " + String(e && e.message || e); }
+        },
+      });
+      d.setUTCMonth(d.getUTCMonth() - 1);
+    }
+    return proben;
+  })(),
   {
     // Beleg-Probe: v1 wurde abgeschaltet (HTTP 410). Bleibt drin, damit man
     // schwarz auf weiss sieht, WARUM auf v2 umgestellt wurde - und sofort

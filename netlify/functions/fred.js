@@ -22,9 +22,59 @@ const CACHE = new Map(); const TTL = 10 * 60 * 1000; // 10 Min
 const DEFAULT_YEARS = {
   // US
   UNRATE: 10, CPIAUCSL: 10, FEDFUNDS: 10, DGS10: 1, T10Y2Y: 1, GDP: 30, PAYEMS: 10, UMCSENT: 10, MORTGAGE30US: 3, M2SL: 10,
-  // Euro-Raum (ueber FRED gespiegelte OECD-/EZB-Reihen - siehe MACRO_PRESETS in market-data.js)
-  ECBDFR: 10, EA19CPALTT01GYM: 10, LRHUTTTTEZM156S: 10, IRLTLT01DEM156N: 10,
+  // Euro-Raum (ueber FRED gespiegelte Eurostat-/EZB-Reihen - siehe MACRO_PRESETS in market-data.js)
+  ECBDFR: 10, CP0000EZ19M086NEST: 10, IRLTLT01DEM156N: 10, CLVMEURSCAB1GQEA19: 30,
 };
+
+// ERWARTETE AKTUALITAET je Serie, in Tagen - der wichtigste Schutz gegen eine
+// stille Falschauskunft.
+//
+// Hintergrund: FRED stellt Serien ein, ohne sie zu entfernen. Eine eingestellte
+// Serie antwortet weiter mit HTTP 200 und gueltigem CSV - nur eben mit Werten,
+// die Jahre alt sind. Im UI sah das exakt aus wie ein frischer Wert. Genau das
+// ist mit LRHUTTTTEZM156S passiert (Euro-Arbeitslosenquote, endet im Januar
+// 2023): kein Fehler, keine Warnung, einfach eine falsche Zahl.
+//
+// Die Schwellen sind bewusst SEHR grosszuegig gewaehlt. Gesucht wird ein totes
+// Band, kein verspaeteter Veroeffentlichungstermin - und der Unterschied ist
+// riesig: eine eingestellte Serie ist um Jahre daneben (LRHUTTTTEZM156S lag bei
+// ueber 1300 Tagen), waehrend normale Verzoegerungen sich in Wochen bewegen.
+//
+// Enge Schwellen waeren hier der schlimmere Fehler: Monatsdaten sind - je nach
+// Quelle und Stichtag - regelmaessig zwei bis drei Monate alt (Eurostat
+// veroeffentlicht spaeter als US-Behoerden, FRED datiert Monatswerte zudem auf
+// den Monatsersten). Eine Warnung, die deshalb staendig erscheint, wuerde
+// ueberlesen - und damit den einen Fall verdecken, fuer den sie da ist.
+const MAX_AGE_DAYS = {
+  // taeglich / woechentlich
+  DGS10: 14, T10Y2Y: 14, ECBDFR: 21, MORTGAGE30US: 30,
+  // Monatlich, einheitlich 150 Tage. US-Behoerden liefern zwar schneller als
+  // Eurostat, aber eine Unterscheidung waere hier falsche Genauigkeit: gegen
+  // die 1300+ Tage einer eingestellten Serie macht es keinen Unterschied, ob
+  // die Schwelle bei 110 oder 150 liegt - fuer den Fehlalarm dagegen schon.
+  UNRATE: 150, CPIAUCSL: 150, FEDFUNDS: 150, PAYEMS: 150, UMCSENT: 150, M2SL: 150,
+  CP0000EZ19M086NEST: 150, IRLTLT01DEM156N: 150,
+  // quartalsweise
+  GDP: 260, CLVMEURSCAB1GQEA19: 260,
+};
+const MAX_AGE_FALLBACK_DAYS = 400; // unbekannte Serie: nur ein wirklich totes Band melden
+
+// Ergaenzt eine Serie um ihr Alter und - falls ueberfaellig - um einen
+// erklaerenden Hinweis. Bewusst NICHT als Fehler behandelt: der Wert stimmt ja,
+// er ist nur alt. Das UI zeigt ihn weiter an, aber deutlich markiert.
+function markiereAktualitaet(shaped, id, now) {
+  if (!shaped || !shaped.latestDate) return shaped;
+  const ts = Date.parse(shaped.latestDate + "T00:00:00Z");
+  if (isNaN(ts)) return shaped;
+  const ageDays = Math.floor(((now || Date.now()) - ts) / 864e5);
+  shaped.ageDays = ageDays;
+  const limit = MAX_AGE_DAYS[id] != null ? MAX_AGE_DAYS[id] : MAX_AGE_FALLBACK_DAYS;
+  if (ageDays > limit) {
+    shaped.outdated = true;
+    shaped.outdatedNote = `letzter Wert ist ${ageDays} Tage alt (erwartet: hoechstens ${limit}) – Serie moeglicherweise eingestellt`;
+  }
+  return shaped;
+}
 
 // Zeitbudget - Hintergrund aus dem Livebetrieb:
 //
@@ -56,19 +106,22 @@ const BROWSER_HEADERS = {
   "Referer": "https://fred.stlouisfed.org/",
 };
 
-// Aus rohen {t, v}-Punkten das einheitliche Ausgabeformat bauen.
-function shapeSeries(id, rows) {
+// Aus rohen {t, v}-Punkten das einheitliche Ausgabeformat bauen. Die
+// Aktualitaetspruefung sitzt bewusst HIER und nicht in den einzelnen Abruf-
+// funktionen: so gilt sie fuer den Sammelabruf und den Einzelabruf gleicher-
+// massen, und eine kuenftige dritte Quelle bekommt sie automatisch mit.
+function shapeSeries(id, rows, now) {
   if (!rows || !rows.length) return null;
   const series = rows.slice(-90); // letzte ~90 Punkte
   const latest = series[series.length - 1];
   const prev = series.length > 1 ? series[series.length - 2] : null;
-  return {
+  return markiereAktualitaet({
     id,
     latest: latest ? latest.v : null,
     latestDate: latest ? latest.t : null,
     chg: (latest && prev) ? +(latest.v - prev.v).toFixed(2) : null,
     series,
-  };
+  }, id, now);
 }
 
 // Erkennt eine Sperr-/Fehlerseite, die FRED auch mal mit Status 200 ausliefert.
@@ -256,4 +309,4 @@ exports.handler = async (event) => {
 };
 
 // Fuer Tests: Einzelfunktionen ohne HTTP-Handler-Wrapper zugaenglich machen.
-exports._internal = { fetchOne, fromFredCsv, fromFredCsvBatch, shapeSeries, FUNCTION_BUDGET_MS, MIN_ATTEMPT_MS, BATCH_YEARS };
+exports._internal = { fetchOne, fromFredCsv, fromFredCsvBatch, shapeSeries, markiereAktualitaet, MAX_AGE_DAYS, MAX_AGE_FALLBACK_DAYS, FUNCTION_BUDGET_MS, MIN_ATTEMPT_MS, BATCH_YEARS };

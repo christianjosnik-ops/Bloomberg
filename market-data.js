@@ -41,18 +41,21 @@
     { id: "MORTGAGE30US", label: "Hypothekenzins 30J", unit: "%" },
     { id: "M2SL", label: "Geldmenge M2", unit: "Mrd $" },
   ];
-  // Euro-Raum ueber FRED gespiegelte OECD-/EZB-Reihen - kein zweiter Provider,
-  // dieselbe fredgraph.csv-Sammelabruf-Pipeline wie die US-Serien oben.
-  // Die genauen Serien-IDs sind plausibel, aber ungetestet (kein Netzwerkzugriff
-  // in der Entwicklungsumgebung) - der Diagnose-Endpunkt (Probe "fred-csv-euro")
-  // zeigt nach dem Deploy, welche davon tatsaechlich existieren. Der Sammelabruf
-  // ist defensiv: fehlt eine ID in der FRED-Antwort, bleibt nur diese eine
-  // Kachel leer, der Rest funktioniert unabhaengig davon weiter.
+  // Euro-Raum ueber FRED gespiegelte Eurostat-/EZB-Reihen - kein zweiter
+  // Provider, dieselbe fredgraph.csv-Sammelabruf-Pipeline wie die US-Serien.
+  //
+  // ACHTUNG bei Aenderungen: Die urspruengliche Auswahl enthielt zwei Serien aus
+  // der OECD-"Main Economic Indicators"-Familie (EA19CPALTT01GYM,
+  // LRHUTTTTEZM156S). Die hat FRED eingestellt - LRHUTTTTEZM156S endet im
+  // Januar 2023. Beide lieferten weiterhin brav eine CSV-Antwort, nur eben mit
+  // drei Jahre alten Werten, die im UI aussahen wie frische Daten. Ersetzt durch
+  // Eurostat-/EZB-Quellen, deren aktuelle Fortschreibung geprueft ist. Wer hier
+  // eine Serie ergaenzt: Enddatum pruefen, nicht nur ob die ID existiert.
   const EURO_MACRO_PRESETS = [
     { id: "ECBDFR", label: "EZB-Einlagensatz", unit: "%" },
-    { id: "EA19CPALTT01GYM", label: "Euro-Inflation (HVPI)", unit: "%" },
-    { id: "LRHUTTTTEZM156S", label: "Euro-Arbeitslosenquote", unit: "%" },
+    { id: "CP0000EZ19M086NEST", label: "Euro-Verbraucherpreise (HVPI)", unit: "Index" },
     { id: "IRLTLT01DEM156N", label: "Bund-Rendite 10J", unit: "%" },
+    { id: "CLVMEURSCAB1GQEA19", label: "Euro-BIP (real)", unit: "Mrd €" },
   ];
   const MACRO_PRESETS = [...US_MACRO_PRESETS, ...EURO_MACRO_PRESETS];
   const INDEX_PRESETS = [
@@ -94,11 +97,10 @@
   const YF = "/.netlify/functions/quote";
   const FRED_FN = "/.netlify/functions/fred";
 
-  const jget = (u) => fetch(u).then((r) => r.json());
-  // Wie jget, aber mit hartem Client-Timeout: ohne das kann eine haengende
+  // Hartes Client-Timeout fuer JEDEN Abruf: ohne das kann eine haengende
   // Server-Antwort den "lädt…"-Zustand einer Ansicht auf ewig einfrieren, ohne
-  // dass jemals ein Fehler sichtbar wird (der try/catch drumherum kommt nie
-  // zum Zug, weil das fetch-Promise selbst nie fertig wird).
+  // dass jemals ein Fehler sichtbar wird - der try/catch drumherum kommt nie
+  // zum Zug, weil das fetch-Promise selbst nie fertig wird.
   async function jgetTimeout(u, ms) {
     const ctrl = new AbortController();
     const to = setTimeout(() => ctrl.abort(), ms || 15000);
@@ -112,6 +114,14 @@
       clearTimeout(to);
     }
   }
+  // jget war frueher ein blankes fetch() OHNE Timeout. Damit konnte eine
+  // haengende Antwort ganze Ansichten dauerhaft im Ladezustand einfrieren:
+  // F3 NEWS und die Detailansicht riefen es direkt auf, sodass ein stummer
+  // Anbieter dort in einem "lädt…" ohne Fehlermeldung endete. Jetzt teilt es
+  // sich die Timeout-Logik mit jgetTimeout - explizite Aufrufe koennen eine
+  // kuerzere Frist setzen, aber gar keine Frist gibt es nicht mehr.
+  const JGET_DEFAULT_TIMEOUT_MS = 20000;
+  const jget = (u) => jgetTimeout(u, JGET_DEFAULT_TIMEOUT_MS);
   const keyOf = (e) => e.y || e.s;
 
   async function fredGetBatch(ids) {
@@ -203,11 +213,25 @@
       ...historyMsgs.map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
       { role: "user", content: latest },
     ];
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${groqKey}` },
-      body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages, max_tokens: 700, temperature: 0.4 }),
-    });
+    // Auch hier ein hartes Timeout: ohne das bliebe der Knopf bei einer
+    // haengenden Antwort dauerhaft auf "analysiere…" stehen. Grosszuegiger als
+    // bei Datenabrufen, weil eine Modellantwort legitim laenger dauern darf.
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 45000);
+    let res;
+    try {
+      res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${groqKey}` },
+        body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages, max_tokens: 700, temperature: 0.4 }),
+        signal: ctrl.signal,
+      });
+    } catch (e) {
+      if (ctrl.signal.aborted) throw new Error("Zeitüberschreitung nach 45s");
+      throw e;
+    } finally {
+      clearTimeout(to);
+    }
     const data = await res.json();
     if (data?.error) throw new Error(data.error.message || "Groq-Fehler");
     return data?.choices?.[0]?.message?.content?.trim() || "Keine Antwort.";

@@ -22,25 +22,47 @@ const RANGE_INTERVAL = {
   "1d": "5m", "5d": "15m", "1mo": "1d", "6mo": "1d", "1y": "1d", "5y": "1wk",
 };
 
-async function getSession(ua) {
+// Zeitgrenzen. Vorher liefen ALLE Yahoo-Aufrufe hier als blankes fetch() ohne
+// jede Frist. Bei einer stummen Gegenstelle bedeutete das: getSession und yGet
+// haengen, fetchAll wiederholt das bis zu viermal ueber zwei Hosts - und
+// irgendwann bricht Netlify die Function nach 10s hart ab. Der Client sah dann
+// keinen sprechenden Fehler, sondern nur einen abgerissenen Aufruf. Dieselbe
+// Klasse Fehler, die im Makro-Tab den Timeout-Sturm ausgeloest hatte.
+const YAHOO_TIMEOUT = 4000;       // je Einzelabruf
+const SESSION_TIMEOUT = 2500;     // Cookie/Crumb sind reine Vorbereitung, duerfen nicht dominieren
+const FUNCTION_BUDGET_MS = 8500;  // Sicherheitsabstand unter Netlifys 10s-Limit
+// Die Symbolsuche laeuft waehrend des Tippens im Suchfeld. Sie darf deshalb
+// nicht das volle Budget ausschoepfen: acht Sekunden auf Vorschlaege zu warten
+// ist auch dann unbrauchbar, wenn die Function technisch noch im Limit bleibt.
+// Lieber keine Vorschlaege als eine erstarrte Eingabe.
+const SEARCH_BUDGET_MS = 5000;
+
+async function getSession(ua, deadline) {
   if (SESSION.cookie && SESSION.crumb && (Date.now() - SESSION.ts) < SESSION_TTL) return SESSION;
+  const rest = () => (deadline ? deadline - Date.now() : SESSION_TIMEOUT);
   try {
-    const r1 = await fetch("https://fc.yahoo.com/", { headers: baseHeaders(ua) });
+    if (rest() < 300) return SESSION; // ohne Restzeit lieber ohne Crumb weiter als gar nicht
+    const r1 = await fetchWithTimeout("https://fc.yahoo.com/", { headers: baseHeaders(ua) }, Math.min(SESSION_TIMEOUT, rest()));
     let cookie = r1.headers.get("set-cookie") || "";
     cookie = cookie.split(",").map((c) => c.split(";")[0]).filter(Boolean).join("; ");
-    const r2 = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", { headers: { ...baseHeaders(ua), ...(cookie ? { Cookie: cookie } : {}) } });
+    if (rest() < 300) return SESSION;
+    const r2 = await fetchWithTimeout("https://query1.finance.yahoo.com/v1/test/getcrumb", { headers: { ...baseHeaders(ua), ...(cookie ? { Cookie: cookie } : {}) } }, Math.min(SESSION_TIMEOUT, rest()));
     const crumb = (await r2.text()).trim();
     if (crumb && crumb.length < 40 && !crumb.includes("<")) SESSION = { cookie, crumb, ts: Date.now() };
   } catch (_) {}
   return SESSION;
 }
 
-async function yGet(pathBuilder, ua, sess) {
+async function yGet(pathBuilder, ua, sess, deadline) {
   const crumbQ = sess.crumb ? `&crumb=${encodeURIComponent(sess.crumb)}` : "";
   const headers = { ...baseHeaders(ua), ...(sess.cookie ? { Cookie: sess.cookie } : {}) };
   for (const host of ["query1", "query2"]) {
+    const rest = deadline ? deadline - Date.now() : YAHOO_TIMEOUT;
+    // Ohne Restzeit den zweiten Host gar nicht erst anfassen - er wuerde nur
+    // in denselben Abbruch laufen und das Budget der uebrigen Abrufe fressen.
+    if (rest < 300) return null;
     try {
-      const res = await fetch(pathBuilder(host, crumbQ), { headers });
+      const res = await fetchWithTimeout(pathBuilder(host, crumbQ), { headers }, Math.min(YAHOO_TIMEOUT, rest));
       if (res.ok) return await res.json();
       if (res.status === 401 || res.status === 403) SESSION = { cookie: null, crumb: null, ts: 0 };
     } catch (_) {}
@@ -49,38 +71,41 @@ async function yGet(pathBuilder, ua, sess) {
 }
 
 const CORE_MODULES = "assetProfile,summaryDetail,defaultKeyStatistics,financialData,recommendationTrend,price";
-async function fetchSum(symbol, ua, sess, modules) {
-  return yGet((h, q) => `https://${h}.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${modules}${q}`, ua, sess);
+async function fetchSum(symbol, ua, sess, modules, deadline) {
+  return yGet((h, q) => `https://${h}.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${modules}${q}`, ua, sess, deadline);
 }
-async function fetchAll(symbol, range) {
+async function fetchAll(symbol, range, deadline) {
   const interval = RANGE_INTERVAL[range] || "1d";
   let last = null;
   for (let attempt = 0; attempt < 4; attempt++) {
-    const ua = pickUA(); const sess = await getSession(ua);
-    const chart = await yGet((h, q) => `https://${h}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}${q}`, ua, sess);
+    // Wiederholungen nur solange noch Zeit bleibt. Ohne diese Pruefung liefen
+    // die vier Versuche samt Wartepausen stur durch, bis Netlify die Function
+    // abbrach - der Aufrufer bekam dann keinen Fehlertext, sondern gar nichts.
+    if (deadline && deadline - Date.now() < 800) { last = last || "Zeitbudget erreicht"; break; }
+    const ua = pickUA(); const sess = await getSession(ua, deadline);
+    const chart = await yGet((h, q) => `https://${h}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}${q}`, ua, sess, deadline);
     if (chart) {
-      let sum = await fetchSum(symbol, ua, sess, CORE_MODULES);
-      if (!sum) {
+      let sum = await fetchSum(symbol, ua, sess, CORE_MODULES, deadline);
+      if (!sum && (!deadline || deadline - Date.now() > 1200)) {
         // Crumb/Session koennte abgelaufen sein - einmal mit frischer Session erneut versuchen
         SESSION = { cookie: null, crumb: null, ts: 0 };
-        const sess2 = await getSession(pickUA());
-        sum = await fetchSum(symbol, ua, sess2, CORE_MODULES);
+        const sess2 = await getSession(pickUA(), deadline);
+        sum = await fetchSum(symbol, ua, sess2, CORE_MODULES, deadline);
       }
-      // calendarEvents separat, unabhaengig vom Erfolg der Kernkennzahlen
-      const cal = await fetchSum(symbol, ua, sess, "calendarEvents").catch(() => null);
-      // Firmen-News separat ueber die Yahoo-Suche (funktioniert weltweit, nicht nur US).
-      // Suche mit dem vollen Firmennamen statt dem rohen Ticker - liefert deutlich
-      // treffsicherere, wirklich zum Unternehmen passende Ergebnisse.
+      // Die folgenden vier Abrufe sind Beiwerk: sie reichern an, sind aber
+      // einzeln entbehrlich. Deshalb parallel statt nacheinander - vorher
+      // summierten sich vier sequenzielle Rundreisen zu Yahoo im schlechtesten
+      // Fall auf ein Vielfaches des Budgets, obwohl keiner auf den anderen
+      // wartet. allSettled, damit ein Fehlschlag die anderen nicht mitreisst.
       const meta0 = chart.chart && chart.chart.result && chart.chart.result[0] && chart.chart.result[0].meta;
       const newsQuery = (meta0 && (meta0.longName || meta0.shortName)) || symbol;
-      const news = await yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(newsQuery)}&newsCount=12&quotesCount=0${q}`, ua, sess).catch(() => null);
-      // Mehrjaehrige Umsatz/Gewinn-Historie separat, unabhaengig vom Erfolg der Kernkennzahlen
-      const earn = await fetchSum(symbol, ua, sess, "earnings").catch(() => null);
-      // Jahresabschluesse (Bilanz/GuV/Kapitalflussrechnung) fuer das Kennzahlen-Modul (F5 RATIO).
-      // UNGETESTET gegen die echte Yahoo-API (kein Netzwerkzugriff in dieser Umgebung) - separater,
-      // unabhaengiger Fetch, damit ein Fehlschlag hier nichts anderes blockiert. TODO nach erstem
-      // Live-Deploy: pruefen, ob Yahoo diese drei Module noch zuverlaessig liefert.
-      const fund = await fetchSum(symbol, ua, sess, "balanceSheetHistory,incomeStatementHistory,cashflowStatementHistory").catch(() => null);
+      const [cal, news, earn, fund] = (await Promise.allSettled([
+        fetchSum(symbol, ua, sess, "calendarEvents", deadline),
+        yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(newsQuery)}&newsCount=12&quotesCount=0${q}`, ua, sess, deadline),
+        fetchSum(symbol, ua, sess, "earnings", deadline),
+        // Jahresabschluesse fuer das Kennzahlen-Modul (F5 RATIO).
+        fetchSum(symbol, ua, sess, "balanceSheetHistory,incomeStatementHistory,cashflowStatementHistory", deadline),
+      ])).map((r) => (r.status === "fulfilled" ? r.value : null));
       return { chart, sum, cal, news, earn, fund };
     }
     last = "429/blockiert";
@@ -201,14 +226,19 @@ function shape(data, symbol) {
   return out;
 }
 
-async function searchSymbols(query) {
-  const ua = pickUA(); const sess = await getSession(ua);
-  let r = await yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0${q}`, ua, sess);
+async function searchSymbols(query, deadline) {
+  const ua = pickUA(); const sess = await getSession(ua, deadline);
+  let r = await yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0${q}`, ua, sess, deadline);
   if (!r || !Array.isArray(r.quotes)) {
-    // Crumb/Session koennte abgelaufen sein - einmal mit frischer Session erneut versuchen
-    SESSION = { cookie: null, crumb: null, ts: 0 };
-    const sess2 = await getSession(pickUA());
-    r = await yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0${q}`, ua, sess2);
+    // Crumb/Session koennte abgelaufen sein - einmal mit frischer Session erneut
+    // versuchen, aber nur wenn dafuer noch Zeit ist. Die Suche laeuft bei jedem
+    // Tastendruck im Suchfeld - ein haengender Wiederholungsversuch waere hier
+    // besonders schmerzhaft.
+    if (!deadline || deadline - Date.now() > 1000) {
+      SESSION = { cookie: null, crumb: null, ts: 0 };
+      const sess2 = await getSession(pickUA(), deadline);
+      r = await yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0${q}`, ua, sess2, deadline);
+    }
   }
   const quotes = (r && Array.isArray(r.quotes)) ? r.quotes : [];
   return quotes.filter((x) => x.symbol && (x.quoteType === "EQUITY" || x.quoteType === "ETF" || x.quoteType === "INDEX")).slice(0, 8)
@@ -283,9 +313,14 @@ exports.handler = async (event) => {
   const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type", "Content-Type": "application/json" };
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: cors, body: "" };
 
+  // Gesamtfrist ab Funktionsstart - dieselbe Bauweise wie in fred.js und
+  // geopolitics.js. Was bis dahin nicht fertig ist, wird sauber als Fehler
+  // gemeldet, statt in Netlifys hartem 10s-Abbruch zu verschwinden.
+  const deadline = Date.now() + FUNCTION_BUDGET_MS;
+
   const search = (event.queryStringParameters && event.queryStringParameters.search || "").trim();
   if (search) {
-    try { return { statusCode: 200, headers: cors, body: JSON.stringify({ quotes: await searchSymbols(search) }) }; }
+    try { return { statusCode: 200, headers: cors, body: JSON.stringify({ quotes: await searchSymbols(search, Math.min(deadline, Date.now() + SEARCH_BUDGET_MS)) }) }; }
     catch (e) { return { statusCode: 500, headers: cors, body: JSON.stringify({ error: String(e && e.message || e) }) }; }
   }
 
@@ -301,7 +336,10 @@ exports.handler = async (event) => {
   try {
     // Fallback-Kette: Yahoo (voller Datensatz) -> Stooq (nur Kurs + Chart).
     const chain = await tryChain([
-      { name: "yahoo", run: async () => { const data = await fetchAll(symbol, range); return data.__error ? null : shape(data, symbol); } },
+      // Yahoo bekommt nicht die volle Frist: Stooq muss danach noch eine echte
+      // Chance haben. Ohne diese Reserve waere die Ersatzquelle genau dann
+      // wertlos, wenn man sie am dringendsten braucht - bei einem haengenden Yahoo.
+      { name: "yahoo", run: async () => { const data = await fetchAll(symbol, range, deadline - 2000); return data.__error ? null : shape(data, symbol); } },
       { name: "stooq", run: () => fromStooq(symbol, range) },
     ]);
     const out = chain.data ? Object.assign({}, chain.data, { source: chain.source }) : null;

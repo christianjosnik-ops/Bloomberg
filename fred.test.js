@@ -34,7 +34,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(shaped.latest, 4.2);
     assert.strictEqual(shaped.chg, 0.2);
     assert.strictEqual(shaped.latestDate, "2026-06-01");
-    console.log("Block 1/13 (fromFredCsv: CSV korrekt geparst): OK");
+    console.log("Block 1/15 (fromFredCsv: CSV korrekt geparst): OK");
   }
 
   // --- fetchOne: Zeitbudget schon vor dem Aufruf erschoepft -> kein Netzwerkzugriff ---
@@ -47,7 +47,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const result = await fetchOne("UNRATE", null, deadline);
     assert.ok(result.error, "muss einen Fehler statt Daten liefern");
     assert.ok(!fetchCalled, "darf bei bereits abgelaufenem Budget gar nicht erst netzwerken");
-    console.log("Block 2/13 (fetchOne: erschoepftes Budget -> kein Netzwerkzugriff): OK");
+    console.log("Block 2/15 (fetchOne: erschoepftes Budget -> kein Netzwerkzugriff): OK");
   }
 
   // --- fetchOne: Provider-Timeouts werden auf die RESTZEIT gekappt, nicht die vollen Standardwerte ---
@@ -64,7 +64,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     console.log("  Dauer bei haengenden Providern und 0.9s Restbudget:", (dt / 1000).toFixed(2) + "s");
     assert.ok(dt < 1400, "Provider-Timeouts muessen auf die Restzeit gekappt werden, nicht auf die vollen 3s/2.5s-Standardwerte laufen");
     assert.ok(result.error, "muss trotzdem einen Fehler statt eines Haengers liefern");
-    console.log("Block 3/13 (fetchOne: Provider-Timeouts an Restbudget gekappt): OK");
+    console.log("Block 3/15 (fetchOne: Provider-Timeouts an Restbudget gekappt): OK");
   }
 
   // --- Handler: mehrere Serien/Wellen, alle Provider haengen -> Gesamtlaufzeit bleibt unter Netlifys Limit ---
@@ -83,7 +83,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const body = JSON.parse(res.body);
     const errors = Object.values(body).map((v) => v && v.error).filter(Boolean);
     assert.strictEqual(errors.length, 10, "alle 10 Serien muessen einen Fehler statt haengender Requests liefern");
-    console.log("Block 4/13 (Handler: Zeitbudget schuetzt ueber alle Wellen hinweg): OK");
+    console.log("Block 4/15 (Handler: Zeitbudget schuetzt ueber alle Wellen hinweg): OK");
   }
 
   // --- Handler: Batch-Cache-Treffer braucht kein Netzwerk ---
@@ -98,7 +98,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const second = await fred.handler({ httpMethod: "GET", queryStringParameters: { ids: "UNRATE" } });
     assert.strictEqual(calls, callsAfterFirst, "zweiter Aufruf innerhalb der TTL darf nicht erneut netzwerken");
     assert.strictEqual(JSON.parse(second.body).UNRATE.latest, 4.2);
-    console.log("Block 5/13 (Handler: Cache verhindert erneuten Netzwerkzugriff): OK");
+    console.log("Block 5/15 (Handler: Cache verhindert erneuten Netzwerkzugriff): OK");
   }
 
   // --- FRED antwortet mit HTML MIT Status 200 (Bot-Sperre) -> muss als solche benannt werden ---
@@ -113,7 +113,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     try { await fromFredCsv("UNRATE", 10, 3000); } catch (e) { msg = e.message; }
     assert.ok(msg && /HTML statt CSV/.test(msg), "eine Sperrseite mit Status 200 darf nicht als 'leeres Ergebnis' durchrutschen, sondern muss benannt werden");
     assert.ok(/Just a moment/.test(msg), "der Auszug der Sperrseite gehoert in die Meldung");
-    console.log("Block 6/13 (FRED: HTML-Sperrseite trotz Status 200 wird erkannt): OK");
+    console.log("Block 6/15 (FRED: HTML-Sperrseite trotz Status 200 wird erkannt): OK");
   }
 
   // --- FRED 4xx: der Antwortkoerper ist die eigentliche Begruendung ---
@@ -124,7 +124,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     let msg = null;
     try { await fromFredCsv("UNRATE", 10, 3000); } catch (e) { msg = e.message; }
     assert.ok(/403/.test(msg) && /Access denied/.test(msg), "Status UND Begruendung muessen in der Meldung stehen");
-    console.log("Block 7/13 (FRED: Fehlertext des Servers bleibt erhalten): OK");
+    console.log("Block 7/15 (FRED: Fehlertext des Servers bleibt erhalten): OK");
   }
 
   // --- CSV mit \r\n und fehlenden Werten (".") wird korrekt geparst ---
@@ -139,7 +139,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(shaped.series.length, 2, "die Zeile mit fehlendem Wert (.) muss uebersprungen werden");
     assert.strictEqual(shaped.latest, 4.2, "Windows-Zeilenenden duerfen den letzten Wert nicht verfaelschen");
     assert.strictEqual(shaped.chg, 0.2);
-    console.log("Block 8/13 (FRED: CRLF-Zeilenenden und fehlende Werte): OK");
+    console.log("Block 8/15 (FRED: CRLF-Zeilenenden und fehlende Werte): OK");
   }
 
   // --- Sammelabruf: mehrspaltiges CSV, fehlende Werte je Spalte ueberspringen ---
@@ -169,7 +169,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(out.GDP.latest, 29000.5);
     assert.strictEqual(out.GDP.series.length, 1, "fuer GDP darf nur die eine Zeile mit echtem Wert zaehlen, nicht die Punkte");
     assert.strictEqual(out.DGS10.latest, 4.3);
-    console.log("Block 9/13 (Sammelabruf: eine Anfrage, Spalten sauber getrennt): OK");
+    console.log("Block 9/15 (Sammelabruf: eine Anfrage, Spalten sauber getrennt): OK");
   }
 
   // --- Sammelabruf: Spaltenreihenfolge wird aus der Kopfzeile gelesen, nicht angenommen ---
@@ -184,7 +184,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const out = await fromFredCsvBatch(["UNRATE", "GDP"], 6000);
     assert.strictEqual(out.UNRATE.latest, 4.1, "die Zuordnung muss ueber die Kopfzeile laufen, nicht ueber die Anfragereihenfolge");
     assert.strictEqual(out.GDP.latest, 29100);
-    console.log("Block 10/13 (Sammelabruf: Zuordnung ueber die Kopfzeile): OK");
+    console.log("Block 10/15 (Sammelabruf: Zuordnung ueber die Kopfzeile): OK");
   }
 
   // --- Handler: EIN Sammelabruf deckt alle zehn Serien ab ---
@@ -205,7 +205,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(Object.keys(body).length, 10);
     assert.ok(Object.values(body).every((v) => v && !v.error && v.latest != null), "alle zehn Serien muessen Daten haben");
     assert.strictEqual(body.UNRATE.source, "fred");
-    console.log("Block 11/13 (Handler: zehn Serien mit einem einzigen Abruf): OK");
+    console.log("Block 11/15 (Handler: zehn Serien mit einem einzigen Abruf): OK");
   }
 
   // --- Handler: scheitert der Sammelabruf, wird der Grund sichtbar mitgeliefert ---
@@ -223,35 +223,91 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const texte = Object.values(body).map((v) => v.error || "").join(" ");
     assert.ok(/Sammelabruf/.test(texte), "der Grund des Sammel-Fehlschlags muss in der Meldung auftauchen, nicht nur der Einzelfehler");
     assert.ok(/403|Access denied/.test(texte), "Statuscode bzw. Servertext des Sammelabrufs muessen erhalten bleiben");
-    console.log("Block 12/13 (Handler: Grund des Sammel-Fehlschlags bleibt sichtbar): OK");
+    console.log("Block 12/15 (Handler: Grund des Sammel-Fehlschlags bleibt sichtbar): OK");
   }
 
-  // --- Euro-Raum-Serien (ueber FRED gespiegelte OECD-/EZB-Reihen) laufen durch
-  //     dieselbe Sammelabruf-Pipeline wie US-Serien - keine Sonderbehandlung ---
+  // --- Euro-Raum-Serien (ueber FRED gespiegelte Eurostat-/EZB-Reihen) laufen
+  //     durch dieselbe Sammelabruf-Pipeline wie US-Serien - keine
+  //     Sonderbehandlung. Die IDs werden aus market-data.js gezogen statt hier
+  //     abgeschrieben: sonst prueft der Test irgendwann Serien, die die App
+  //     laengst nicht mehr abfragt (genau das war hier schon einmal der Fall). ---
   {
     providers._resetBreakers();
+    const md = require("./market-data.js");
+    const euroIds = md.EURO_MACRO_PRESETS.map((m) => m.id);
+    const werte = { erste: [3.75, 131.9, 2.51, 3000], zweite: [3.75, 132.4, 2.48, 3010] };
     let calls = 0;
     global.fetch = async () => {
       calls++;
       return {
         ok: true, status: 200,
         text: async () => [
-          "DATE,ECBDFR,EA19CPALTT01GYM,LRHUTTTTEZM156S,IRLTLT01DEM156N",
-          "2026-05-01,3.75,2.4,6.4,2.51",
-          "2026-06-01,3.75,2.3,6.3,2.48",
+          "DATE," + euroIds.join(","),
+          "2026-05-01," + werte.erste.join(","),
+          "2026-06-01," + werte.zweite.join(","),
         ].join("\n"),
       };
     };
     const fred = freshHandler();
-    const res = await fred.handler({ httpMethod: "GET", queryStringParameters: { ids: "ECBDFR,EA19CPALTT01GYM,LRHUTTTTEZM156S,IRLTLT01DEM156N" } });
+    const res = await fred.handler({ httpMethod: "GET", queryStringParameters: { ids: euroIds.join(",") } });
     assert.strictEqual(calls, 1, "die vier Euro-Raum-Serien muessen im selben Sammelabruf laufen wie US-Serien - kein zweiter Provider");
     const body = JSON.parse(res.body);
-    assert.strictEqual(body.ECBDFR.latest, 3.75, "EZB-Einlagensatz");
-    assert.strictEqual(body.EA19CPALTT01GYM.latest, 2.3, "Euro-Raum-Inflation (HVPI-Wachstumsrate)");
-    assert.strictEqual(body.LRHUTTTTEZM156S.latest, 6.3, "Euro-Raum-Arbeitslosenquote");
-    assert.strictEqual(body.IRLTLT01DEM156N.latest, 2.48, "Bund-Rendite 10J (Deutschland als Euro-Raum-Benchmark)");
-    assert.ok(Object.values(body).every((v) => v.source === "fred"), "Quelle bleibt einheitlich 'fred', kein separater EZB-Provider noetig");
-    console.log("Block 13/13 (Euro-Raum-Serien laufen durch dieselbe FRED-Sammelabruf-Pipeline wie US-Serien): OK");
+    euroIds.forEach((id, i) => {
+      assert.ok(body[id], `Serie ${id} fehlt in der Antwort`);
+      assert.strictEqual(body[id].latest, werte.zweite[i], `letzter Wert von ${id}`);
+      assert.strictEqual(body[id].source, "fred", "Quelle bleibt einheitlich 'fred', kein separater EZB-Provider noetig");
+    });
+    console.log("Block 13/15 (Euro-Raum-Serien laufen durch dieselbe FRED-Sammelabruf-Pipeline wie US-Serien): OK");
+  }
+
+  // --- Eingestellte Serie: FRED liefert weiter HTTP 200 und gueltiges CSV,
+  //     nur eben mit jahrealten Werten. Genau so ist LRHUTTTTEZM156S
+  //     (Euro-Arbeitslosenquote, endet Januar 2023) monatelang als frischer
+  //     Wert im UI gestanden - ohne Fehler, ohne Warnung, schlicht falsch. ---
+  {
+    providers._resetBreakers();
+    const jetzt = Date.parse("2026-08-28T00:00:00Z");
+    const { shapeSeries } = freshHandler()._internal;
+
+    const tot = shapeSeries("UNRATE", [{ t: "2022-12-01", v: 6.6 }, { t: "2023-01-01", v: 6.7 }], jetzt);
+    assert.strictEqual(tot.outdated, true, "eine seit drei Jahren stehende Monatsserie MUSS als nicht aktuell markiert sein");
+    assert.ok(tot.ageDays > 1000, "das Alter gehoert in die Antwort, damit das UI es benennen kann");
+    assert.ok(/eingestellt/.test(tot.outdatedNote), "die Meldung muss den Verdacht benennen, nicht nur eine Zahl liefern");
+    assert.strictEqual(tot.latest, 6.7, "der Wert bleibt erhalten - er ist alt, nicht falsch");
+
+    // Normale Veroeffentlichungsverzoegerung darf NICHT anschlagen, sonst waere
+    // die Warnung wertlos, weil sie staendig erscheint - und wuerde genau den
+    // einen Fall verdecken, fuer den sie gedacht ist.
+    const frisch = shapeSeries("UNRATE", [{ t: "2026-06-01", v: 4.1 }, { t: "2026-07-01", v: 4.2 }], jetzt);
+    assert.ok(!frisch.outdated, "US-Monatsdaten mit knapp zwei Monaten Verzug sind der Normalfall");
+
+    // Eurostat veroeffentlicht spaeter als US-Behoerden - auch das muss ohne
+    // Warnung durchgehen, sonst steht bei den Euro-Kacheln dauerhaft ein Hinweis.
+    const euStat = shapeSeries("CP0000EZ19M086NEST", [{ t: "2026-04-01", v: 131.9 }, { t: "2026-05-01", v: 132.4 }], jetzt);
+    assert.ok(!euStat.outdated, `Euro-HVPI vom Mai ist Ende August normal (${euStat.ageDays} Tage), darf nicht als eingestellt gelten`);
+
+    const quartal = shapeSeries("CLVMEURSCAB1GQEA19", [{ t: "2026-01-01", v: 3000 }, { t: "2026-04-01", v: 3010 }], jetzt);
+    assert.ok(!quartal.outdated, "Quartalsdaten erscheinen noch spaeter - die Schwelle muss das beruecksichtigen");
+
+    const taeglich = shapeSeries("DGS10", [{ t: "2026-08-01", v: 4.1 }, { t: "2026-08-04", v: 4.2 }], jetzt);
+    assert.strictEqual(taeglich.outdated, true, "eine Tagesserie mit 24 Tagen Luecke ist auffaellig");
+    console.log("Block 14/15 (eingestellte Serien werden erkannt, normaler Verzug nicht): OK");
+  }
+
+  // --- Kein Auseinanderlaufen zwischen Presets und Aktualitaetsschwellen:
+  //     wer eine Kachel ergaenzt, ohne MAX_AGE_DAYS zu pflegen, bekommt still
+  //     die 400-Tage-Rueckfallschwelle - womit genau die Serien unbemerkt
+  //     durchrutschen, fuer die die Pruefung gedacht ist. ---
+  {
+    const { MAX_AGE_DAYS, MAX_AGE_FALLBACK_DAYS } = freshHandler()._internal;
+    const md = require("./market-data.js");
+    const fehlend = md.MACRO_PRESETS.map((m) => m.id).filter((id) => MAX_AGE_DAYS[id] == null);
+    assert.deepStrictEqual(fehlend, [],
+      "fuer diese Makro-Serien fehlt eine Aktualitaetsschwelle in fred.js (sie liefen sonst still in die " + MAX_AGE_FALLBACK_DAYS + "-Tage-Rueckfallschwelle): " + fehlend.join(", "));
+    assert.strictEqual(md.EURO_MACRO_PRESETS.length, 4);
+    assert.ok(!md.MACRO_PRESETS.some((m) => m.id === "LRHUTTTTEZM156S"),
+      "die eingestellte OECD-Arbeitslosenserie darf nicht zurueckkehren - sie endet im Januar 2023");
+    console.log("Block 15/15 (jede Makro-Kachel hat eine gepflegte Aktualitaetsschwelle): OK");
   }
 
   console.log("\nAlle fred.js-Tests erfolgreich.");

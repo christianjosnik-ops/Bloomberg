@@ -41,7 +41,7 @@ function ucdpBody(events, envelope) {
     assert.strictEqual(computeLevel(5, false), "hoch", "5+ Artikel allein reicht fuer hoch");
     assert.strictEqual(computeLevel(0, true), "hoch", "aktive offizielle Quelle allein reicht fuer hoch");
     assert.strictEqual(computeLevel(5, true), "kritisch", "beide Signale zusammen -> kritisch");
-    console.log("Block 1/17 (Stufenlogik): OK");
+    console.log("Block 1/21 (Stufenlogik): OK");
   }
 
   // --- UCDP liefert Laender, GDELT antwortet fuer alle -> kombinierte Stufe ---
@@ -72,7 +72,7 @@ function ucdpBody(events, envelope) {
     assert.ok(report.countries.RUS, "feste Watchlist muss aufgefuellt sein");
     assert.strictEqual(report.countries.RUS.level, "keine");
     assert.strictEqual(report.countries.RUS.ucdpActive, false);
-    console.log("Block 2/17 (UCDP-Normalfall, kombinierte Signale): OK");
+    console.log("Block 2/21 (UCDP-Normalfall, kombinierte Signale): OK");
   }
 
   // --- UCDP faellt komplett aus -> trotzdem Bericht mit fester Watchlist ---
@@ -90,7 +90,7 @@ function ucdpBody(events, envelope) {
     assert.ok(report.countries.RUS, "feste Watchlist funktioniert weiter ohne UCDP");
     assert.strictEqual(Object.keys(report.countries).length, 14, "genau die feste Watchlist (14 Laender), keine dynamischen dazu");
     assert.ok(/übersprungen/.test(report.reliefwebError), "ohne RELIEFWEB_APPNAME muss ReliefWeb als uebersprungen gemeldet werden, nicht als Fehlschlag");
-    console.log("Block 3/17 (UCDP-Ausfall, feste Liste als Basis, ReliefWeb standardmaessig uebersprungen): OK");
+    console.log("Block 3/21 (UCDP-Ausfall, feste Liste als Basis, ReliefWeb standardmaessig uebersprungen): OK");
   }
 
   // --- Zeitbudget: haengende GDELT-Aufrufe duerfen den Bericht nicht blockieren ---
@@ -111,25 +111,38 @@ function ucdpBody(events, envelope) {
     assert.ok(dt < 10000, "Gesamtlaufzeit muss unter dem Netlify-Funktionslimit bleiben, auch wenn alles haengt");
     const levels = Object.values(report.countries).map((c) => c.level);
     assert.ok(levels.some((l) => l === "nicht geprüft"), "mindestens ein Land muss als 'nicht geprüft' markiert sein, nicht faelschlich als 'keine'");
-    console.log("Block 4/17 (Zeitbudget schuetzt vor Timeout-Sturm): OK");
+    console.log("Block 4/21 (Zeitbudget schuetzt vor Timeout-Sturm): OK");
   }
 
-  // --- UCDP: erster Kandidat scheitert -> zweiter Kandidat wird probiert ---
+  // --- UCDP: die neuesten Monatsversionen gibt es noch nicht (404) -> es wird
+  //     rueckwaerts gelaufen, bis eine existiert. Genau das war der Kernfehler:
+  //     die frueher hartkodierte Version "24.01.24" hat nie existiert. ---
   {
-    let calls = 0;
+    let ge404 = 0, treffer = null;
+    const jetzt = new Date();
+    // Die drittneueste Version ist die erste, die "existiert".
+    const dritte = (() => {
+      const d = new Date(Date.UTC(jetzt.getUTCFullYear(), jetzt.getUTCMonth(), 1));
+      d.setUTCMonth(d.getUTCMonth() - 2);
+      return `${d.getUTCFullYear() % 100}.0.${d.getUTCMonth() + 1}`;
+    })();
     global.fetch = async (url) => {
       const u = String(url);
-      if (u.includes("candidateevents")) { calls++; return { ok: false, status: 404, text: async () => "not found" }; }
-      if (u.includes("gedevents")) { calls++; return { ok: true, status: 200, json: async () => ucdpBody([{ country: "Mali", date_start: "2026-07-01" }]) }; }
+      if (u.includes("ucdpapi.pcr.uu.se")) {
+        if (u.includes(`/${dritte}?`)) { treffer = u; return { ok: true, status: 200, json: async () => ucdpBody([{ country: "Mali", date_start: "2026-07-01" }]) }; }
+        ge404++;
+        return { ok: false, status: 404, text: async () => "not found" };
+      }
       if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
       throw new Error("unerwartet: " + u);
     };
     const { buildReport } = freshHandler()._internal;
     const report = await buildReport();
-    assert.strictEqual(calls, 2, "beide UCDP-Kandidaten muessen probiert werden, wenn der erste fehlschlaegt");
-    assert.strictEqual(report.ucdpError, null, "greift der zweite Kandidat, darf kein Fehler im Bericht stehen");
-    assert.ok(report.countries.MLI && report.countries.MLI.ucdpActive, "Daten des zweiten Kandidaten muessen ankommen");
-    console.log("Block 5/17 (UCDP: Rueckfall auf zweiten Kandidaten): OK");
+    assert.ok(ge404 >= 2, "die noch nicht veroeffentlichten neueren Versionen muessen tatsaechlich probiert worden sein");
+    assert.ok(treffer, "die erste existierende Version muss gefunden werden");
+    assert.strictEqual(report.ucdpError, null, "wird eine existierende Version gefunden, darf kein Fehler im Bericht stehen");
+    assert.ok(report.countries.MLI && report.countries.MLI.ucdpActive, "deren Daten muessen ankommen");
+    console.log("Block 5/21 (UCDP: laeuft ueber 404er rueckwaerts bis zur existierenden Monatsversion): OK");
   }
 
   // --- Zeitbudget gilt AB FUNKTIONSSTART, nicht erst nach UCDP ---
@@ -153,7 +166,7 @@ function ucdpBody(events, envelope) {
     assert.ok(dt < 10000, "UCDP-Zeit + GDELT-Wellen zusammen muessen unter Netlifys Funktionslimit bleiben");
     const levels = Object.values(report.countries).map((c) => c.level);
     assert.ok(levels.some((l) => l === "nicht geprüft"), "Budget muss trotz vorgelagerter UCDP-Zeit greifen");
-    console.log("Block 6/17 (Zeitbudget ab Funktionsstart, deckt UCDP + GDELT zusammen ab): OK");
+    console.log("Block 6/21 (Zeitbudget ab Funktionsstart, deckt UCDP + GDELT zusammen ab): OK");
   }
 
   // --- UCDP: unbekannte Laendernamen werden uebersprungen, nicht abgestuerzt ---
@@ -172,7 +185,7 @@ function ucdpBody(events, envelope) {
     const report = await buildReport();
     assert.strictEqual(report.ucdpError, null, "unbekannte/fehlende Laendernamen duerfen die gesamte UCDP-Verarbeitung nicht zum Scheitern bringen");
     assert.ok(report.countries.SDN && report.countries.SDN.ucdpActive, "das bekannte Land muss trotzdem verarbeitet werden");
-    console.log("Block 7/17 (UCDP: unbekannte Laendernamen werden uebersprungen): OK");
+    console.log("Block 7/21 (UCDP: unbekannte Laendernamen werden uebersprungen): OK");
   }
 
   // --- UCDP: Ereignis-Array wird unabhaengig vom Antwort-Umschlag gefunden ---
@@ -188,7 +201,7 @@ function ucdpBody(events, envelope) {
       const report = await buildReport();
       assert.ok(report.countries.SYR && report.countries.SYR.ucdpActive, `Umschlag "${envelope}" muss erkannt werden`);
     }
-    console.log("Block 8/17 (UCDP: Ereignis-Array wird umschlagunabhaengig gefunden): OK");
+    console.log("Block 8/21 (UCDP: Ereignis-Array wird umschlagunabhaengig gefunden): OK");
   }
 
   // --- ReliefWeb wird OHNE RELIEFWEB_APPNAME gar nicht erst angefragt ---
@@ -205,7 +218,7 @@ function ucdpBody(events, envelope) {
     const report = await buildReport();
     assert.strictEqual(reliefwebCalled, false, "ohne genehmigten Appname darf ReliefWeb gar nicht erst angefragt werden (spart Zeitbudget fuer einen garantierten Fehlschlag)");
     assert.ok(/RELIEFWEB_APPNAME/.test(report.reliefwebError));
-    console.log("Block 9/17 (ReliefWeb standardmaessig uebersprungen ohne Appname): OK");
+    console.log("Block 9/21 (ReliefWeb standardmaessig uebersprungen ohne Appname): OK");
   }
 
   // --- MIT RELIEFWEB_APPNAME: ReliefWeb ergaenzt ein von UCDP bereits bekanntes Land ---
@@ -231,7 +244,7 @@ function ucdpBody(events, envelope) {
     assert.ok(report.countries.SDN.ucdpActive, "die UCDP-Flags duerfen durch ReliefWeb nicht verdraengt werden");
     assert.ok(report.countries.SDN.reliefwebActive, "ReliefWeb-Flag muss zusaetzlich gesetzt sein");
     assert.strictEqual(report.countries.SDN.reliefwebHeadline, "Sudan conflict escalation");
-    console.log("Block 10/17 (ReliefWeb ergaenzt ein UCDP-Land, ohne dessen Flags zu verdraengen): OK");
+    console.log("Block 10/21 (ReliefWeb ergaenzt ein UCDP-Land, ohne dessen Flags zu verdraengen): OK");
   }
 
   // --- MIT RELIEFWEB_APPNAME: ReliefWeb fuegt ein Land hinzu, das UCDP nicht kennt ---
@@ -253,7 +266,7 @@ function ucdpBody(events, envelope) {
     assert.ok(report.countries.HTI, "ein nur von ReliefWeb gemeldetes Land muss trotzdem in der Watchlist landen");
     assert.strictEqual(report.countries.HTI.reliefwebActive, true);
     assert.strictEqual(report.countries.HTI.ucdpActive, false);
-    console.log("Block 11/17 (ReliefWeb fuegt ein UCDP-unbekanntes Land hinzu): OK");
+    console.log("Block 11/21 (ReliefWeb fuegt ein UCDP-unbekanntes Land hinzu): OK");
   }
 
   // --- MIT RELIEFWEB_APPNAME: 410 beendet die ReliefWeb-Kette sofort ---
@@ -273,7 +286,7 @@ function ucdpBody(events, envelope) {
     delete process.env.RELIEFWEB_APPNAME;
     assert.strictEqual(rwCalls, 1, "ein 410 gilt fuer jede Abfrageform derselben Version - weitere Versuche waeren Zeitverschwendung");
     assert.ok(/410/.test(report.reliefwebError));
-    console.log("Block 12/17 (ReliefWeb: 410 beendet die Kette sofort): OK");
+    console.log("Block 12/21 (ReliefWeb: 410 beendet die Kette sofort): OK");
   }
 
   // --- country.iso2 entfernt, Appname konfigurierbar (Live-Befund) ---
@@ -293,7 +306,7 @@ function ucdpBody(events, envelope) {
       "country.iso2 wird von ReliefWeb v2 abgelehnt (Live-Beleg: HTTP 400) und darf nicht mehr angefragt werden");
     assert.ok(seen.every((u) => u.includes("appname=appname-eins")), "der gesetzte Appname muss verwendet werden");
     delete process.env.RELIEFWEB_APPNAME;
-    console.log("Block 13/17 (country.iso2 entfernt, Appname aus RELIEFWEB_APPNAME uebernommen): OK");
+    console.log("Block 13/21 (country.iso2 entfernt, Appname aus RELIEFWEB_APPNAME uebernommen): OK");
   }
 
   // --- Unbekannter GDELT-/ReliefWeb-Fehler wird sichtbar, nicht verschluckt ---
@@ -311,7 +324,7 @@ function ucdpBody(events, envelope) {
     delete process.env.RELIEFWEB_APPNAME;
     assert.ok(report.reliefwebError && /unerwartetes Antwortformat/.test(report.reliefwebError),
       "ein unbekannter ReliefWeb-Umschlag darf nicht als 'keine Krisen weltweit' durchgehen, sondern muss als Fehler auffallen");
-    console.log("Block 14/17 (unbekanntes ReliefWeb-Antwortformat wird gemeldet, nicht verschluckt): OK");
+    console.log("Block 14/21 (unbekanntes ReliefWeb-Antwortformat wird gemeldet, nicht verschluckt): OK");
   }
 
   // --- GDELT: mehr Schlagzeilen, laengerer Zeitraum, Trendverlauf wird angehaengt ---
@@ -342,7 +355,7 @@ function ucdpBody(events, envelope) {
     assert.ok(timelineUrl.includes("mode=timelinevol") && timelineUrl.includes("timespan=2w"), "die Trend-Abfrage muss ueber einen eigenen, laengeren Zeitraum laufen");
     assert.deepStrictEqual(report.countries.SDN.gdeltTrend, [{ date: "20260725", value: 1.2 }, { date: "20260801", value: 4.8 }],
       "der Trendverlauf muss geparst und am Land haengen");
-    console.log("Block 15/17 (GDELT: mehr Schlagzeilen, 7-Tage-Fenster, Trendverlauf angehaengt): OK");
+    console.log("Block 15/21 (GDELT: mehr Schlagzeilen, 7-Tage-Fenster, Trendverlauf angehaengt): OK");
   }
 
   // --- GDELT: schlaegt NUR der Trend-Abruf fehl, bleiben Schlagzeilen/Anzahl unberuehrt ---
@@ -361,7 +374,7 @@ function ucdpBody(events, envelope) {
     assert.strictEqual(report.countries.SDN.gdeltCount, 1, "ein fehlgeschlagener Trend-Abruf darf die Artikelanzahl nicht beeintraechtigen");
     assert.strictEqual(report.countries.SDN.headlines.length, 1, "und auch nicht die Schlagzeilen");
     assert.deepStrictEqual(report.countries.SDN.gdeltTrend, [], "bei fehlgeschlagenem Trend-Abruf bleibt der Trend schlicht leer, statt das Land scheitern zu lassen");
-    console.log("Block 16/17 (GDELT: Trend-Abruf ist best-effort, Schlagzeilen bleiben unberuehrt bei dessen Fehlschlag): OK");
+    console.log("Block 16/21 (GDELT: Trend-Abruf ist best-effort, Schlagzeilen bleiben unberuehrt bei dessen Fehlschlag): OK");
   }
 
   // --- findGdeltTimelineData: erkennt die Zeitreihe unabhaengig vom Umschlag ---
@@ -374,7 +387,117 @@ function ucdpBody(events, envelope) {
     assert.strictEqual(findGdeltTimelineData({ articles: [{ title: "x", url: "https://x" }] }, 0), null,
       "eine Artikel-Antwort (title/url, kein date/value) darf NICHT faelschlich als Zeitreihe erkannt werden");
     assert.strictEqual(findGdeltTimelineData(null, 0), null);
-    console.log("Block 17/17 (findGdeltTimelineData: umschlagunabhaengig, grenzt sich von der Artikel-Form ab): OK");
+    console.log("Block 17/21 (findGdeltTimelineData: umschlagunabhaengig, grenzt sich von der Artikel-Form ab): OK");
+  }
+
+  // --- UCDP: ein haengender Host darf NICHT die ganze Versionsliste durchlaufen.
+  //     Das ist die gefaehrlichste Fehlermoeglichkeit der neuen Suche: 15
+  //     Versionen x 2.5s Timeout waeren 37s - ein Vielfaches des Funktionslimits,
+  //     und GDELT kaeme nie zum Zug. Nach dem ersten Timeout muss Schluss sein. ---
+  {
+    let ucdpVersuche = 0;
+    global.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.includes("ucdpapi.pcr.uu.se")) {
+        ucdpVersuche++;
+        return new Promise((_, reject) => { if (opts && opts.signal) opts.signal.addEventListener("abort", () => reject(new Error("aborted"))); });
+      }
+      if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
+      throw new Error("unerwartet: " + u);
+    };
+    const { buildReport } = freshHandler()._internal;
+    const t0 = Date.now();
+    const report = await buildReport();
+    const dt = Date.now() - t0;
+    console.log("  Dauer bei haengendem UCDP-Host:", (dt / 1000).toFixed(1) + "s, UCDP-Versuche:", ucdpVersuche);
+    assert.strictEqual(ucdpVersuche, 1, "nach einem Timeout ist der Host nicht erreichbar - weitere Versionen zu probieren kostet nur weitere Timeouts");
+    assert.ok(dt < 10000, "die Gesamtlaufzeit muss trotz haengendem UCDP unter dem Funktionslimit bleiben");
+    assert.ok(report.ucdpError, "der UCDP-Fehler muss sichtbar bleiben");
+    assert.ok(report.countries.RUS, "GDELT und die feste Watchlist muessen trotzdem durchlaufen");
+    console.log("Block 18/21 (UCDP: Timeout beendet die Versionssuche sofort, statt sie durchzulaufen): OK");
+  }
+
+  // --- UCDP: eine langsame, aber antwortende Gegenstelle darf das Teilbudget
+  //     nicht ueberschreiten - sonst frisst allein die Versionssuche die Zeit,
+  //     die GDELT fuer die Laenderabfragen braucht. ---
+  {
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("ucdpapi.pcr.uu.se")) {
+        await new Promise((r) => setTimeout(r, 600)); // langsam, aber kein Timeout
+        return { ok: false, status: 404, text: async () => "not found" };
+      }
+      if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
+      throw new Error("unerwartet: " + u);
+    };
+    const { buildReport, UCDP_BUDGET_MS } = freshHandler()._internal;
+    const t0 = Date.now();
+    const report = await buildReport();
+    const dt = Date.now() - t0;
+    console.log("  Dauer bei langsamem UCDP (600ms je 404):", (dt / 1000).toFixed(1) + "s, Teilbudget:", UCDP_BUDGET_MS + "ms");
+    assert.ok(dt < 10000, "Gesamtlaufzeit muss unter dem Funktionslimit bleiben");
+    assert.ok(/Zeitbudget/.test(report.ucdpError), "die abgebrochene Versionssuche muss als Zeitbudget-Abbruch gemeldet werden, nicht als stiller Fehlschlag");
+    assert.ok(report.countries.RUS, "GDELT muss danach noch Zeit bekommen haben");
+    console.log("Block 19/21 (UCDP: Versionssuche respektiert ihr eigenes Teilbudget): OK");
+  }
+
+  // --- UCDP: die gefundene Version wird gemerkt. Ohne das bezahlt JEDER
+  //     Aufruf die 404-Kaskade erneut - bei 20 Minuten Cache-Laufzeit und
+  //     kurzlebigen Instanzen waere das viel verschenkte Zeit. ---
+  {
+    const jetzt = new Date();
+    const vormonat = (() => {
+      const d = new Date(Date.UTC(jetzt.getUTCFullYear(), jetzt.getUTCMonth(), 1));
+      d.setUTCMonth(d.getUTCMonth() - 1);
+      return `${d.getUTCFullYear() % 100}.0.${d.getUTCMonth() + 1}`;
+    })();
+    let ucdpAufrufe = [];
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("ucdpapi.pcr.uu.se")) {
+        ucdpAufrufe.push(u);
+        if (u.includes(`/${vormonat}?`)) return { ok: true, status: 200, json: async () => ucdpBody([{ country: "Sudan", date_start: "2026-08-01" }]) };
+        return { ok: false, status: 404, text: async () => "not found" };
+      }
+      if (u.includes("gdeltproject.org")) return { ok: true, status: 200, json: async () => ({ articles: [] }) };
+      throw new Error("unerwartet: " + u);
+    };
+    const mod = freshHandler();
+    const { fetchUcdp } = mod._internal;
+    await fetchUcdp(Date.now() + 5000);
+    const ersterLauf = ucdpAufrufe.length;
+    assert.ok(ersterLauf >= 2, "der erste Lauf muss die 404er durchlaufen, um die gueltige Version zu finden");
+
+    ucdpAufrufe = [];
+    await fetchUcdp(Date.now() + 5000);
+    assert.strictEqual(ucdpAufrufe.length, 1, "der zweite Lauf muss die gemerkte Version sofort treffen, statt erneut alle 404er abzuklappern");
+    assert.ok(ucdpAufrufe[0].includes(`/${vormonat}?`), "und zwar genau die zuvor erfolgreiche");
+    console.log("Block 20/21 (UCDP: erfolgreiche Version wird gemerkt, zweiter Lauf spart die 404-Kaskade): OK");
+  }
+
+  // --- Budget-Kopplung: Laenge der Versionsliste, UCDP-Teilbudget und die Zeit,
+  //     die GDELT fuer seine Wellen braucht, haengen zusammen. Wer eine der drei
+  //     Zahlen aendert, ohne die anderen zu pruefen, hungert eine Seite aus -
+  //     entweder wird die Versionssuche abgeschnitten oder die halbe Laenderliste
+  //     bleibt "nicht geprueft". Deshalb hier festgenagelt. ---
+  {
+    const {
+      ucdpUrls, UCDP_BUDGET_MS, UCDP_ANNAHME_MS_JE_VERSUCH,
+      FUNCTION_BUDGET_MS, PER_REQUEST_TIMEOUT, WAVE,
+    } = freshHandler()._internal;
+
+    const kandidaten = ucdpUrls(new Date());
+    const kaltstartKosten = kandidaten.length * UCDP_ANNAHME_MS_JE_VERSUCH;
+    assert.ok(kaltstartKosten <= UCDP_BUDGET_MS,
+      `die komplette Versionsliste (${kandidaten.length} Aufrufe x ${UCDP_ANNAHME_MS_JE_VERSUCH}ms = ${kaltstartKosten}ms) muss in das UCDP-Teilbudget von ${UCDP_BUDGET_MS}ms passen - sonst wird sie beim Kaltstart abgeschnitten`);
+
+    // Was nach der Versionssuche fuer GDELT uebrig bleibt, muss noch fuer
+    // mindestens zwei Wellen reichen (14 Laender = 3 Wellen; zwei davon decken
+    // den Grossteil der Beobachtungsliste ab).
+    const restFuerGdelt = FUNCTION_BUDGET_MS - UCDP_BUDGET_MS;
+    assert.ok(restFuerGdelt >= 2 * PER_REQUEST_TIMEOUT,
+      `nach der Versionssuche bleiben nur ${restFuerGdelt}ms fuer GDELT - das reicht nicht fuer zwei Wellen a ${PER_REQUEST_TIMEOUT}ms (je ${WAVE} Laender)`);
+    console.log(`Block 21/21 (Budgets passen zusammen: ${kandidaten.length} UCDP-Versuche in ${UCDP_BUDGET_MS}ms, ${restFuerGdelt}ms fuer GDELT): OK`);
   }
 
   console.log("\nAlle geopolitics.js-Tests erfolgreich.");

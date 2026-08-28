@@ -16,12 +16,13 @@
 // Zugangsbeschraenkung und passt inhaltlich besser (Konfliktdaten statt
 // allgemeiner Katastrophenmeldungen).
 //
-// UNGETESTET gegen die echten APIs (kein Netzwerkzugriff in der Entwicklungs-
-// umgebung). Alle Antwortformate werden defensiv geparst - unerwartete Formen
-// fuehren zu leeren/neutralen Werten, nie zum Absturz. UCDPs genaues
-// Versions-/Pfadschema konnte nicht live geprueft werden, deshalb zwei
-// plausible Kandidaten (siehe UCDP_CANDIDATES) - der Diagnose-Endpunkt zeigt,
-// welcher (falls ueberhaupt einer) traegt.
+// Die APIs sind aus der Entwicklungsumgebung nicht erreichbar (Egress-Richtlinie
+// blockt CONNECT mit 403), deshalb wurden Versionsschema und Antwortformat aus
+// der oeffentlichen UCDP-Dokumentation recherchiert statt geraten: die API
+// antwortet mit {TotalCount, TotalPages, NextPageUrl, Result:[...]}, und die
+// Monats-Candidate-Versionen folgen dem Muster JJ.0.M (Stand August 2026:
+// 26.0.7). Alle Antwortformate werden trotzdem defensiv geparst - unerwartete
+// Formen fuehren zu leeren/neutralen Werten, nie zum Absturz.
 //
 // Lektion aus dem Makro-Tab (F4) direkt angewendet: NICHT alle Laender in
 // einem Promise.all gleichzeitig abfragen (dann sieht keine Anfrage die
@@ -36,7 +37,14 @@ const CACHE = new Map(); const TTL = 20 * 60 * 1000; // 20 Min - Weltlage aender
 const WAVE = 5;
 const PER_REQUEST_TIMEOUT = 3000; // GDELT je Land
 const RELIEFWEB_TIMEOUT = 3000;   // ReliefWeb-Sammelabruf (ein Aufruf fuer alle Laender)
-const UCDP_TIMEOUT = 3000;        // je Kandidat (siehe UCDP_CANDIDATES)
+const UCDP_TIMEOUT = 2500;        // je einzelnem Versions-Versuch
+const UCDP_MIN_ATTEMPT_MS = 400;  // darunter lohnt kein weiterer Versuch mehr
+// Eigenes Teilbudget fuer die Versionssuche. Die Kandidatenliste ist bewusst
+// lang (die neuesten Monatsversionen existieren noch nicht und antworten mit
+// billigen 404ern) - ohne diese Schranke koennte allein die Suche das
+// Gesamtbudget aufbrauchen und GDELT gar nicht mehr zum Zug kommen lassen.
+const UCDP_BUDGET_MS = 2500;
+const UCDP_ANNAHME_MS_JE_VERSUCH = 350; // Erfahrungswert fuer ein 404, nur fuer die Budget-Pruefung im Test
 // Deckt ReliefWeb UND alle GDELT-Wellen ZUSAMMEN ab, mit Sicherheitsabstand
 // unter Netlifys 10s-Standardlimit fuer synchrone Functions. Vorher wurde die
 // Frist erst NACH dem ReliefWeb-Aufruf gesetzt - dadurch konnte die Gesamtlaufzeit
@@ -104,13 +112,16 @@ function ucdpLookupCountry(rawName) {
   return UCDP_COUNTRY_ALIASES[key] || null;
 }
 
-// Sucht rekursiv nach dem Array der eigentlichen Ereignisse, unabhaengig vom
-// Umschlag der Antwort (direktes Array, {Result: [...]}, {result: [...]}, ...).
-// Gleiche Taktik wie findObservations() in fred.js fuer DBnomics - die genaue
-// Form der UCDP-Antwort konnte hier nicht live geprueft werden.
+// Sucht das Array der eigentlichen Ereignisse. Live recherchiert: die UCDP-API
+// antwortet mit {TotalCount, TotalPages, PreviousPageUrl, NextPageUrl, Result:[...]}
+// - deshalb wird "Result" zuerst direkt geprueft. Die rekursive Suche bleibt als
+// Absicherung, falls sich der Umschlag aendert.
 function findUcdpEvents(node, depth) {
+  const looksLikeEvents = (arr) => Array.isArray(arr) && arr.length
+    && arr.every((x) => x && typeof x === "object" && ("country" in x || "country_id" in x));
+  if ((depth || 0) === 0 && node && typeof node === "object" && looksLikeEvents(node.Result)) return node.Result;
   if (Array.isArray(node)) {
-    if (node.length && node.every((x) => x && typeof x === "object" && ("country" in x || "country_id" in x))) return node;
+    if (looksLikeEvents(node)) return node;
     for (const item of node) { const hit = findUcdpEvents(item, (depth || 0) + 1); if (hit) return hit; }
     return null;
   }
@@ -119,23 +130,94 @@ function findUcdpEvents(node, depth) {
   return null;
 }
 
-// Zwei Kandidaten, aeltere zuerst nicht bevorzugt - der aktuellere/naeher an
-// "jetzt" liegende Datensatz (Candidate Events, woechentlich aktualisiert)
-// zuerst, das jaehrlich veroeffentlichte, dafuer stabilere GED als Rueckfall.
-// Versionskennungen sind Vermutungen (siehe Kommentar am Dateianfang).
-const UCDP_CANDIDATES = [
-  (cutoffStr) => `https://ucdpapi.pcr.uu.se/api/candidateevents/24.01.24?pagesize=1000&page=0&StartDate=${cutoffStr}`,
-  (cutoffStr) => `https://ucdpapi.pcr.uu.se/api/gedevents/24.1?pagesize=1000&page=0&StartDate=${cutoffStr}`,
-];
+// VERSIONSSCHEMA (recherchiert, Stand August 2026):
+//   Monats-Candidate:    JJ.0.M    z.B. 26.0.7 = Julidaten 2026
+//   GED (Jahresrelease): JJ.1      z.B. 25.1   - deckt nur bis 2024-12-31
+//
+// Zwei Lehren daraus, die die frueheren Fassungen falsch hatten:
+//
+// 1. Der Monatsstring WANDERT. Hartkodiert (frueher "24.01.24") bricht die
+//    Weltlage jeden Monat aufs Neue - und brach hier von Anfang an, weil die
+//    geratene Version nie existiert hat. Deshalb wird die Liste aus dem
+//    aktuellen Datum erzeugt und rueckwaerts gelaufen: die neueste noch nicht
+//    veroeffentlichte Version liefert 404 (billig und schnell), die erste
+//    existierende gewinnt.
+// 2. GED taugt NICHT als Rueckfall fuer die aktuelle Lage. Version 25.1 endet
+//    am 2024-12-31; eine Abfrage der letzten 120 Tage liefert dort per
+//    Definition null Treffer. Schlimmer noch: wuerde man den Zeitfilter
+//    weglassen, stuenden Konfliktdaten von 2024 als "aktuelle Weltlage" im UI -
+//    genau die Art stiller Falschauskunft, die bei den eingestellten
+//    FRED-Serien behoben wurde. GED ist deshalb bewusst KEIN Kandidat mehr.
+// Wie viele Monate rueckwaerts gesucht wird. Die Zahl ist an das Zeitbudget
+// gekoppelt und nicht frei waehlbar: jeder Versuch kostet einen Netzwerkaufruf
+// (~200-400ms fuer ein 404), und die Summe muss in UCDP_BUDGET_MS passen -
+// sonst wird die Suche mittendrin abgeschnitten UND GDELT bekommt zu wenig Zeit
+// fuer die Laenderwellen. 8 Monate decken auch eine laengere
+// Veroeffentlichungspause ab; im Normalfall trifft ohnehin der zweite Versuch
+// (der laufende Monat ist meist noch nicht veroeffentlicht, der Vormonat schon).
+// Ein Test prueft, dass Listenlaenge und Budget zueinander passen.
+//
+// Die 6 ergeben sich aus zwei Bedingungen, die sich gegenseitig einschnueren:
+//   (a) alle Versuche muessen in UCDP_BUDGET_MS passen  -> 7 URLs x 350ms = 2450ms
+//   (b) danach muss GDELT noch zwei volle Wellen schaffen -> 8500 - 2500 = 6000ms
+// Mehr Monate gingen nur, wenn man das Gesamtbudget anhebt - und das steht
+// wegen Netlifys 10s-Limit nicht zur Verfuegung.
+const UCDP_MONTHS_BACK = 6;
+function ucdpCandidateVersions(now, monthsBack) {
+  const out = [];
+  // Auf den Monatsersten normieren: sonst rutscht setUTCMonth() vom 31. eines
+  // Monats in den uebernaechsten (31. Maerz minus 1 Monat = 3. Maerz).
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  for (let i = 0; i < (monthsBack || UCDP_MONTHS_BACK); i++) {
+    out.push(`${d.getUTCFullYear() % 100}.0.${d.getUTCMonth() + 1}`);
+    d.setUTCMonth(d.getUTCMonth() - 1);
+  }
+  return out;
+}
 
-async function fetchUcdp() {
-  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 120);
-  const cutoffStr = cutoff.toISOString().slice(0, 10);
+// Ressourcenname: das monatliche Candidate-Release laeuft laut API-Dokumentation
+// ueber dieselbe Ressource wie GED ("gedevents"), nur mit einem Monats- statt
+// Jahres-Versionsstring. "candidateevents" wird als zweite Schreibweise
+// mitprobiert - nur fuer die neueste Version, damit eine falsche Annahme nicht
+// die gesamte Liste verdoppelt.
+function ucdpUrls(now, monthsBack) {
+  const versions = ucdpCandidateVersions(now, monthsBack);
+  const urls = [];
+  versions.forEach((v, i) => {
+    urls.push(`https://ucdpapi.pcr.uu.se/api/gedevents/${v}?pagesize=1000&page=0`);
+    if (i === 0) urls.push(`https://ucdpapi.pcr.uu.se/api/candidateevents/${v}?pagesize=1000&page=0`);
+  });
+  return urls;
+}
+
+// Zuletzt erfolgreiche URL merken. Nur der erste Aufruf einer warmen Instanz
+// bezahlt die Versionssuche; danach sitzt der Treffer sofort. Modul-global wie
+// CACHE und der Circuit Breaker - gilt also je warmer Instanz, nicht global.
+let UCDP_LAST_GOOD_URL = null;
+
+async function fetchUcdp(deadline) {
   const attempts = [];
-  for (const build of UCDP_CANDIDATES) {
-    const url = build(cutoffStr);
+  let versuche = 0;
+  const urls = ucdpUrls(new Date());
+  // Die gemerkte URL zuerst, ohne sie doppelt zu probieren.
+  const reihenfolge = UCDP_LAST_GOOD_URL
+    ? [UCDP_LAST_GOOD_URL, ...urls.filter((u) => u !== UCDP_LAST_GOOD_URL)]
+    : urls;
+  for (const url of reihenfolge) {
+    // Hartes Zeitbudget: Die Kandidatenliste ist bewusst lang (die neuesten
+    // Versionen existieren noch nicht und liefern billige 404er). Ohne diese
+    // Schranke wuerde ein haengender Host die Liste durchlaufen und das
+    // Gesamtbudget der Function reissen, bevor GDELT ueberhaupt drankommt.
+    const rest = deadline ? deadline - Date.now() : UCDP_TIMEOUT;
+    if (rest < UCDP_MIN_ATTEMPT_MS) { attempts.push(`Zeitbudget nach ${versuche} Versuchen erreicht`); break; }
+    versuche++;
     try {
-      const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } }, UCDP_TIMEOUT);
+      const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } },
+        Math.max(UCDP_MIN_ATTEMPT_MS, Math.min(UCDP_TIMEOUT, rest)));
+      // 404 = diese Version gibt es (noch) nicht. Das ist der Normalfall beim
+      // Rueckwaertslaufen und keine Meldung wert - sonst bestuende der Fehlertext
+      // am Ende aus einem Dutzend nichtssagender 404-Zeilen.
+      if (res.status === 404) continue;
       if (!res.ok) {
         let detail = "";
         try { detail = (await res.text()).slice(0, 200).replace(/\s+/g, " ").trim(); } catch (_) {}
@@ -158,15 +240,17 @@ async function fetchUcdp() {
           ucdpDate: dateStr ? String(dateStr).slice(0, 10) : null,
         });
       }
-      if (byCountry.size) return byCountry;
+      if (byCountry.size) { UCDP_LAST_GOOD_URL = url; return byCountry; }
       attempts.push("UCDP: keines der gemeldeten Laender konnte zugeordnet werden");
     } catch (e) {
       attempts.push(String((e && e.message) || e));
-      // Timeout = Host antwortet nicht - der zweite Kandidat probiert eine
-      // ANDERE URL, das ist kein sinnloses Nachfassen wie bei ReliefWebs 410.
+      // Ein Timeout heisst: der Host antwortet ueberhaupt nicht. Weitere
+      // Versionen zu probieren kostet dann nur weitere Timeouts, ohne je etwas
+      // zu liefern - dieselbe Kaskade, die den Makro-Tab lahmgelegt hatte.
+      if (e && e.isTimeout) break;
     }
   }
-  throw new Error(attempts.join(" | "));
+  throw new Error(attempts.length ? attempts.join(" | ") : `keine der ${versuche} geprueften UCDP-Versionen existiert`);
 }
 
 // --- ReliefWeb: aktuelle Krisen je Land (ein Aufruf, appname statt Key) -----
@@ -368,7 +452,10 @@ async function buildReport() {
   const deadline = Date.now() + FUNCTION_BUDGET_MS;
 
   let ucdpByCountry = new Map(); let ucdpError = null;
-  try { ucdpByCountry = await fetchUcdp(); } catch (e) { ucdpError = String(e && e.message || e); }
+  // Eigenes Teilbudget, zusaetzlich an der Gesamtfrist gedeckelt: die
+  // Versionssuche darf niemals so lange laufen, dass GDELT leer ausgeht.
+  const ucdpDeadline = Math.min(deadline, Date.now() + UCDP_BUDGET_MS);
+  try { ucdpByCountry = await fetchUcdp(ucdpDeadline); } catch (e) { ucdpError = String(e && e.message || e); }
 
   // ReliefWeb v2 verlangt einen VORAB REGISTRIERTEN Appnamen (Live-Beleg:
   // HTTP 403 "not using an approved appname") - ohne einen ist jeder Versuch
@@ -454,4 +541,4 @@ exports.handler = async (event) => {
 };
 
 // Fuer Tests: Einzelfunktionen ohne HTTP-Handler-Wrapper zugaenglich machen.
-exports._internal = { computeLevel, baseEntry, buildReport, ucdpLookupCountry, findUcdpEvents, fetchUcdp, findGdeltTimelineData };
+exports._internal = { computeLevel, baseEntry, buildReport, ucdpLookupCountry, findUcdpEvents, fetchUcdp, findGdeltTimelineData, ucdpCandidateVersions, ucdpUrls, UCDP_BUDGET_MS, UCDP_ANNAHME_MS_JE_VERSUCH, FUNCTION_BUDGET_MS, PER_REQUEST_TIMEOUT, WAVE };
