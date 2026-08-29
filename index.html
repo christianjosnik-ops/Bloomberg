@@ -816,6 +816,26 @@ function DiagPanel({ diag, diagBusy, diagErr, runDiag }) {
           {" · "}<span style={{ color: C.green }}>{diag.zusammenfassung?.ok?.length || 0} OK</span>
           {" · "}<span style={{ color: C.red }}>{diag.zusammenfassung?.fehlgeschlagen?.length || 0} fehlgeschlagen</span>
         </div>
+        {/* Zuerst: kommen die Schluessel ueberhaupt an? Ohne diese Zeilen sieht
+            man nur, dass FRED ablehnt - aber nicht, ob der eigene Schluessel
+            gar nicht ankommt oder ob er ankommt und abgelehnt wird. Das sind
+            zwei voellig verschiedene Probleme mit zwei verschiedenen Loesungen. */}
+        {Array.isArray(diag.konfiguration) && diag.konfiguration.length > 0 && (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ color: C.amber, fontSize: "var(--fs-xs)", marginBottom: 4 }}>SCHLÜSSEL / KONFIGURATION</div>
+            {diag.konfiguration.map((k) => (
+              <div key={k.name} style={{ borderLeft: `3px solid ${k.gesetzt ? C.green : C.muted}`, background: C.panel2, padding: "5px 10px", marginBottom: 4 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ color: C.white, fontSize: "var(--fs-sm)" }}>{k.name} <span className="muted">· {k.zweck}</span></span>
+                  <span style={{ color: k.gesetzt ? C.green : C.muted, fontSize: "var(--fs-xs)", whiteSpace: "nowrap" }}>
+                    {k.gesetzt ? `gesetzt (${k.laenge} Zeichen, ${k.quelle})` : "nicht gesetzt"}
+                  </span>
+                </div>
+                {k.hinweis && <div className="muted" style={{ marginTop: 3, fontSize: "var(--fs-2xs)" }}>{k.hinweis}</div>}
+              </div>
+            ))}
+          </div>
+        )}
         {diag.proben.map((p) => {
           const good = p.ok === true && !p.warning;
           const col = p.skipped ? C.muted : good ? C.green : C.red;
@@ -1074,6 +1094,12 @@ function App() {
   const [connected, setConnected] = useState(false);
   const [fhKey, setFhKey] = useState(""); const [tdKey, setTdKey] = useState(""); const [groqKey, setGroqKey] = useState("");
   const [fhIn, setFhIn] = useState(""); const [tdIn, setTdIn] = useState(""); const [groqIn, setGmIn] = useState("");
+  // FRED-Schluessel: anders als die drei oben wird er NICHT vom Browser direkt
+  // an den Anbieter geschickt - api.stlouisfed.org sendet keine CORS-Header,
+  // deshalb laeuft FRED ueber die eigene Netlify-Function. Der Schluessel geht
+  // dort per X-FRED-Key-Header hin. Optional: ist serverseitig FRED_API_KEY
+  // gesetzt, braucht es hier gar keine Eingabe.
+  const [fredKey, setFredKey] = useState(""); const [fredIn, setFredIn] = useState("");
   const [connecting, setConnecting] = useState(false); const [connErr, setConnErr] = useState("");
   const [tab, setTab] = useState("markt");
   // Reaktiv statt window.innerWidth im Render - siehe useMediaQuery oben.
@@ -1093,9 +1119,14 @@ function App() {
   const suggestSeq = useRef(0);
 
   useEffect(() => {
-    const fk = LS.get("fh_key") || "", tk = LS.get("td_key") || "", gk = LS.get("groq_key") || "", wl = LS.get("watch2");
+    const fk = LS.get("fh_key") || "", tk = LS.get("td_key") || "", gk = LS.get("groq_key") || "", frk = LS.get("fred_key") || "", wl = LS.get("watch2");
     if (wl?.length) { setWatch(wl); setActive(wl[0]); }
-    if (fk) { setFhKey(fk); setTdKey(tk); setGroqKey(gk); setConnected(true); const use = wl?.length ? wl : watch; loadWatch(fk, use); loadDetail(use[0], fk, tk); loadIndices(); }
+    // Auch die Eingabefelder vorbelegen: sonst stuende beim naechsten
+    // "VERBINDEN" ein leeres FRED-Feld, das den gespeicherten Schluessel
+    // ueberschreibt - man haette ihn verloren, ohne etwas falsch gemacht zu
+    // haben. Gleiches gilt fuer die anderen drei.
+    setFhIn(fk); setTdIn(tk); setGmIn(gk); setFredIn(frk);
+    if (fk) { setFhKey(fk); setTdKey(tk); setGroqKey(gk); setFredKey(frk); setConnected(true); const use = wl?.length ? wl : watch; loadWatch(fk, use); loadDetail(use[0], fk, tk); loadIndices(); }
     setBooted(true);
   }, []);
 
@@ -1186,15 +1217,15 @@ function App() {
     try {
       const q = await fhQuote("AAPL", fk);
       if (q && q.c != null) {
-        const tk = tdIn.trim(), gk = groqIn.trim();
-        setFhKey(fk); setTdKey(tk); setGroqKey(gk); setConnected(true);
-        LS.set("fh_key", fk); LS.set("td_key", tk); LS.set("groq_key", gk);
+        const tk = tdIn.trim(), gk = groqIn.trim(), frk = fredIn.trim();
+        setFhKey(fk); setTdKey(tk); setGroqKey(gk); setFredKey(frk); setConnected(true);
+        LS.set("fh_key", fk); LS.set("td_key", tk); LS.set("groq_key", gk); LS.set("fred_key", frk);
         loadWatch(fk, watch); loadDetail(active || watch[0], fk, tk); loadIndices();
       } else throw new Error("ungültig");
     } catch { setConnErr("Finnhub-Verbindung fehlgeschlagen – Key prüfen."); }
     setConnecting(false);
   };
-  const disconnect = () => { setConnected(false); setFhKey(""); setTdKey(""); setGroqKey(""); setDetail(null); LS.del("fh_key"); LS.del("td_key"); LS.del("groq_key"); };
+  const disconnect = () => { setConnected(false); setFhKey(""); setTdKey(""); setGroqKey(""); setFredKey(""); setDetail(null); LS.del("fh_key"); LS.del("td_key"); LS.del("groq_key"); LS.del("fred_key"); };
   const addWatch = (e) => { if (!watch.find((x) => keyOf(x) === keyOf(e))) { const wl = [e, ...watch].slice(0, 20); persistWatch(wl); loadWatch(fhKey, [e]); } };
   const rmWatch = (e) => persistWatch(watch.filter((x) => keyOf(x) !== keyOf(e)));
 
@@ -1277,7 +1308,7 @@ function App() {
   const loadMacro = async () => {
     setMacroBusy(true); setMacroErr("");
     try {
-      const out = await fredGetBatch(MACRO_PRESETS.map((m) => m.id));
+      const out = await fredGetBatch(MACRO_PRESETS.map((m) => m.id), fredKey);
       if (!out || typeof out !== "object") throw new Error("Leere/ungültige Antwort vom Server");
       if (out.error) throw new Error(out.error);
       setMacro((p) => ({ ...p, ...out }));
@@ -1310,7 +1341,11 @@ function App() {
   const runDiag = async () => {
     setDiagBusy(true); setDiagErr(""); setDiag(null);
     try {
-      const out = await jgetTimeout("/.netlify/functions/diag", 30000);
+      // Den FRED-Schluessel mitgeben: nur so kann die Diagnose beantworten, ob
+      // der eingetragene Schluessel WIRKLICH funktioniert. Ohne ihn koennte sie
+      // bloss melden, dass FRED ohne Schluessel ablehnt - was man auch vorher
+      // schon wusste.
+      const out = await jgetTimeout("/.netlify/functions/diag", 30000, fredKey ? { "X-FRED-Key": fredKey } : undefined);
       if (!out || !Array.isArray(out.proben)) throw new Error("Unerwartete Antwort vom Diagnose-Endpunkt");
       setDiag(out);
     } catch (e) { setDiagErr((e && e.message) || "Diagnose fehlgeschlagen"); }
@@ -1395,9 +1430,16 @@ function App() {
             <div style={{ color: C.amber, fontSize: "var(--fs-xs)", marginBottom: 5 }}>2 · TWELVE-DATA-KEY <span className="muted">(empfohlen · für den Kursverlauf/Chart)</span></div>
             <input className="field" style={{ width: "100%" }} type="password" value={tdIn} onChange={(e) => setTdIn(e.target.value)} placeholder="twelvedata.com – Gratis-Key" />
           </div>
-          <div style={{ marginBottom: 16 }}>
+          <div style={{ marginBottom: 14 }}>
             <div style={{ color: C.amber, fontSize: "var(--fs-xs)", marginBottom: 5 }}>3 · GROQ-KEY <span className="muted">(optional · KI-Analyst)</span></div>
-            <input className="field" style={{ width: "100%" }} type="password" value={groqIn} onChange={(e) => setGmIn(e.target.value)} onKeyDown={(e) => e.key === "Enter" && connect()} placeholder="console.groq.com – Gratis-Key (keine Kreditkarte)" />
+            <input className="field" style={{ width: "100%" }} type="password" value={groqIn} onChange={(e) => setGmIn(e.target.value)} placeholder="console.groq.com – Gratis-Key (keine Kreditkarte)" />
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ color: C.amber, fontSize: "var(--fs-xs)", marginBottom: 5 }}>4 · FRED-KEY <span className="muted">(optional · F4 MAKRO, Konjunkturdaten)</span></div>
+            <input className="field" style={{ width: "100%" }} type="password" value={fredIn} onChange={(e) => setFredIn(e.target.value)} onKeyDown={(e) => e.key === "Enter" && connect()} placeholder="fredaccount.stlouisfed.org/apikey – Gratis-Key" />
+            <div className="muted" style={{ marginTop: 4, fontSize: "var(--fs-2xs)" }}>
+              FRED verlangt seit November 2025 einen Schlüssel. Leer lassen, wenn auf dem Server bereits <span style={{ color: C.amber }}>FRED_API_KEY</span> hinterlegt ist – dann gilt der.
+            </div>
           </div>
           <button className="btn btn--solid btn--block" onClick={connect} disabled={connecting}>{connecting ? "VERBINDE…" : "▶ VERBINDEN"}</button>
           {connErr && <div className="note note--err" style={{ marginTop: 10 }}>{connErr}</div>}
