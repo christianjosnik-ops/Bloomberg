@@ -27,6 +27,11 @@
 // hier derselbe Fix separat.
 require("dns").setDefaultResultOrder("ipv4first");
 
+// Gruppierung und Serienliste kommen aus fred.js selbst - nicht abgeschrieben.
+// Nur so kann die Diagnose nicht etwas anderes pruefen als das, was im Betrieb
+// laeuft. Das blosse Laden von fred.js loest keine Netzwerkaufrufe aus.
+const { SERIES_FREQ: FRED_SERIES_FREQ, gruppiereNachFrequenz: FRED_GRUPPIEREN } = require("./fred.js")._internal;
+
 const PROBE_TIMEOUT = 6000;
 const BODY_SNIPPET = 400;
 
@@ -60,45 +65,40 @@ const PROBES = [
     // Erwartet: CSV, erste Zeile Kopfzeile, danach "JJJJ-MM-TT,wert"
     expect: (body) => /^[^\n]*\n\d{4}-\d{2}-\d{2},/.test(body.trim()) ? null : "sieht nicht nach FRED-CSV aus (Bot-Sperre oder HTML-Antwort?)",
   },
-  {
-    // Der eigentliche Hauptweg seit dem Timeout-Befund: EIN Abruf fuer alle
-    // Serien statt zehn einzelne. Wenn diese Probe traegt, ist F4 MAKRO gesund.
-    key: "fred-csv-sammel",
-    label: "FRED CSV SAMMELABRUF (Hauptweg – alle Serien in einer Antwort)",
-    url: "https://fred.stlouisfed.org/graph/fredgraph.csv?id=UNRATE,CPIAUCSL,FEDFUNDS,DGS10,T10Y2Y,GDP,PAYEMS,UMCSENT,MORTGAGE30US,M2SL&cosd=2014-01-01",
-    headers: { "User-Agent": UA, "Accept": "text/csv,text/plain,*/*", "Accept-Language": "en-US,en;q=0.9", "Referer": "https://fred.stlouisfed.org/" },
-    expect: (body) => {
-      const head = (body.split(/\r?\n/)[0] || "").toUpperCase();
-      const fehlend = ["UNRATE", "CPIAUCSL", "GDP"].filter((id) => !head.includes(id));
-      return fehlend.length ? "Kopfzeile enthaelt diese Serien nicht: " + fehlend.join(", ") : null;
-    },
-  },
-  {
-    // Euro-Raum-Serien laufen ueber denselben FRED-Sammelabruf wie die
-    // US-Serien (FRED spiegelt Eurostat-/EZB-Reihen unter regulaeren FRED-IDs) -
-    // kein zweiter Provider noetig.
-    //
-    // Die Probe prueft ZWEI Dinge, nicht nur eines: ob die IDs in der Kopfzeile
-    // auftauchen UND ob die juengste Datenzeile ueberhaupt aus juengerer Zeit
-    // stammt. Der zweite Teil ist der wichtigere - die vorher genutzten
-    // OECD-Serien existierten durchaus, lieferten aber Werte von 2023.
-    key: "fred-csv-euro",
-    label: "FRED CSV Euro-Raum (EZB-Satz, HVPI, Bund-Rendite, Euro-BIP)",
-    url: "https://fred.stlouisfed.org/graph/fredgraph.csv?id=ECBDFR,CP0000EZ19M086NEST,IRLTLT01DEM156N,CLVMEURSCAB1GQEA19&cosd=2014-01-01",
-    headers: { "User-Agent": UA, "Accept": "text/csv,text/plain,*/*", "Accept-Language": "en-US,en;q=0.9", "Referer": "https://fred.stlouisfed.org/" },
-    expect: (body) => {
-      const zeilen = body.trim().split(/\r?\n/);
-      const head = (zeilen[0] || "").toUpperCase();
-      const fehlend = ["ECBDFR", "CP0000EZ19M086NEST", "IRLTLT01DEM156N", "CLVMEURSCAB1GQEA19"].filter((id) => !head.includes(id));
-      if (fehlend.length) return "Kopfzeile enthaelt diese Serien-IDs nicht: " + fehlend.join(", ");
-      const letzteZeile = zeilen[zeilen.length - 1] || "";
-      const datum = (letzteZeile.split(",")[0] || "").trim();
-      const ts = Date.parse(datum + "T00:00:00Z");
-      if (isNaN(ts)) return "letzte Zeile beginnt nicht mit einem Datum: " + letzteZeile.slice(0, 60);
-      const tage = Math.floor((Date.now() - ts) / 864e5);
-      return tage > 400 ? `juengstes Datum im Sammelabruf ist ${datum} (${tage} Tage alt) – mindestens eine Serie duerfte eingestellt sein` : null;
-    },
-  },
+  // FRED-Sammelabrufe: EINE Probe je Frequenzgruppe - erzeugt aus derselben
+  // Gruppierungslogik, die fred.js im Betrieb verwendet. Frueher standen hier
+  // zwei handgeschriebene URLs mit gemischten Frequenzen; die haetten ab jetzt
+  // etwas anderes diagnostiziert als das, was die App tatsaechlich abfragt.
+  // Genau diese Art Auseinanderlaufen hat schon einmal zu einer Fehldiagnose
+  // gefuehrt, deshalb hier eine gemeinsame Quelle statt zweier Listen.
+  ...(function fredGruppenProben() {
+    const ids = Object.keys(FRED_SERIES_FREQ);
+    const gruppen = [...FRED_GRUPPIEREN(ids).entries()];
+    return gruppen.map(([freq, gruppenIds]) => ({
+      key: "fred-sammel-" + freq,
+      label: `FRED Sammelabruf ${freq} (${gruppenIds.length} Serien) – Hauptweg fuer F4 MAKRO`,
+      url: "https://fred.stlouisfed.org/graph/fredgraph.csv?id=" + gruppenIds.join(",") + "&cosd=2014-01-01",
+      headers: { "User-Agent": UA, "Accept": "text/csv,text/plain,*/*", "Accept-Language": "en-US,en;q=0.9", "Referer": "https://fred.stlouisfed.org/" },
+      // Prueft DREI Dinge, nicht nur Erreichbarkeit:
+      //   1. kommen alle angefragten Serien als Spalte zurueck (fehlende IDs
+      //      laesst FRED stillschweigend weg),
+      //   2. ist die juengste Zeile ueberhaupt aus juengerer Zeit (eine
+      //      eingestellte Serie antwortet normal, nur mit alten Werten),
+      //   3. sieht die Antwort ueberhaupt nach CSV aus.
+      expect: (body) => {
+        const zeilen = body.trim().split(/\r?\n/);
+        if (zeilen.length < 3) return "zu wenige Zeilen – vermutlich keine Datenantwort: " + body.slice(0, 80).replace(/\s+/g, " ");
+        const head = (zeilen[0] || "").toUpperCase();
+        const fehlend = gruppenIds.filter((id) => !head.includes(id.toUpperCase()));
+        if (fehlend.length) return "FRED lieferte keine Spalte fuer: " + fehlend.join(", ");
+        const datum = ((zeilen[zeilen.length - 1] || "").split(",")[0] || "").trim();
+        const ts = Date.parse(datum + "T00:00:00Z");
+        if (isNaN(ts)) return "letzte Zeile beginnt nicht mit einem Datum: " + zeilen[zeilen.length - 1].slice(0, 60);
+        const tage = Math.floor((Date.now() - ts) / 864e5);
+        return tage > 400 ? `juengstes Datum ist ${datum} (${tage} Tage alt) – mindestens eine Serie dieser Gruppe duerfte eingestellt sein` : null;
+      },
+    }));
+  })(),
   // UCDP ist die Hauptquelle fuer die dynamische Laenderliste in F6 WELTLAGE.
   // Die Monats-Candidate-Version WANDERT (Schema JJ.0.M) - deshalb werden die
   // beiden zuletzt plausiblen Monate geprobt, genau wie geopolitics.js sie

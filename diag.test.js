@@ -131,29 +131,50 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     console.log("Block 8/9 (abweichender Status wird als Abweichung gemeldet): OK");
   }
 
-  // --- Euro-Raum-Makro-Probe: prueft BEIDES - ob die Serien-IDs existieren UND
-  //     ob die Daten aktuell sind. Der zweite Teil ist der wichtigere: die
-  //     zuvor genutzten OECD-Serien existierten durchaus, lieferten aber Werte
-  //     von 2023, die im UI wie frische Daten aussahen. ---
+  // --- FRED-Sammelproben: eine je Frequenzgruppe, erzeugt aus derselben
+  //     Gruppierung, die fred.js im Betrieb nutzt. Geprueft wird, dass die
+  //     Proben nicht auseinanderlaufen koennen UND dass sie beides erkennen:
+  //     fehlende Spalten und veraltete Daten. Letzteres ist das Wichtigere -
+  //     die zuvor genutzten OECD-Serien existierten durchaus, lieferten aber
+  //     Werte von 2023, die im UI wie frische Daten aussahen. ---
   {
     const { PROBES } = fresh()._internal;
-    const p = PROBES.find((x) => x.key === "fred-csv-euro");
-    assert.ok(p, "die Euro-Raum-Makro-Probe muss existieren");
+    const fredIntern = require("/home/user/Bloomberg/netlify/functions/fred.js")._internal;
+    const sammelProben = PROBES.filter((x) => x.key.startsWith("fred-sammel-"));
+    assert.ok(sammelProben.length >= 3, "es muss je Frequenzgruppe eine Sammelprobe geben, gefunden: " + sammelProben.length);
 
+    // Keine Probe darf Frequenzen mischen - sonst diagnostiziert sie etwas
+    // anderes als das, was fred.js tatsaechlich abfragt.
+    for (const p of sammelProben) {
+      const ids = decodeURIComponent(p.url.match(/[?&]id=([^&]+)/)[1]).split(",");
+      assert.strictEqual(new Set(ids.map(fredIntern.freqOf)).size, 1,
+        `Probe ${p.key} mischt Frequenzen: ${ids.join(",")}`);
+    }
+    // Und zusammen muessen sie alle bekannten Serien abdecken.
+    const abgedeckt = sammelProben.flatMap((p) => decodeURIComponent(p.url.match(/[?&]id=([^&]+)/)[1]).split(","));
+    const fehlendeSerien = Object.keys(fredIntern.SERIES_FREQ).filter((id) => !abgedeckt.includes(id));
+    assert.deepStrictEqual(fehlendeSerien, [], "diese Serien werden von keiner Probe geprueft: " + fehlendeSerien.join(", "));
+
+    // Verhalten am Beispiel der Monatsgruppe durchspielen.
+    const p = sammelProben.find((x) => x.key === "fred-sammel-monatlich");
+    assert.ok(p, "die Monatsgruppe muss eine eigene Probe haben");
+    const ids = decodeURIComponent(p.url.match(/[?&]id=([^&]+)/)[1]).split(",");
     const heute = new Date().toISOString().slice(0, 10);
-    const kopf = "DATE,ECBDFR,CP0000EZ19M086NEST,IRLTLT01DEM156N,CLVMEURSCAB1GQEA19";
-    assert.strictEqual(p.expect(`${kopf}\n${heute},3.75,132.4,2.51,3010`), null,
-      "aktuelle Daten mit allen vier IDs duerfen keine Warnung ergeben");
+    const zeile = (datum) => datum + "," + ids.map(() => "1.0").join(",");
+    const kopf = "DATE," + ids.join(",");
 
-    const warnFehlt = p.expect(`DATE,ECBDFR\n${heute},3.75`);
-    assert.ok(warnFehlt && /CP0000EZ19M086NEST/.test(warnFehlt) && /IRLTLT01DEM156N/.test(warnFehlt) && /CLVMEURSCAB1GQEA19/.test(warnFehlt),
-      "fehlende Serien-IDs muessen einzeln benannt werden, damit klar ist, welche ID nicht existiert");
+    assert.strictEqual(p.expect(`${kopf}\n${zeile("2026-01-01")}\n${zeile(heute)}`), null,
+      "aktuelle Daten mit allen IDs duerfen keine Warnung ergeben");
+
+    const warnFehlt = p.expect(`DATE,${ids[0]}\n2026-01-01,1.0\n${heute},1.0`);
+    assert.ok(warnFehlt && ids.slice(1).every((id) => warnFehlt.includes(id)),
+      "fehlende Serien-IDs muessen einzeln benannt werden, damit klar ist, welche Spalte FRED weggelassen hat");
 
     // Genau das Szenario der eingestellten OECD-Serie: IDs alle da, Daten alt.
-    const warnAlt = p.expect(`${kopf}\n2023-01-01,3.75,132.4,2.51,3010`);
+    const warnAlt = p.expect(`${kopf}\n${zeile("2022-12-01")}\n${zeile("2023-01-01")}`);
     assert.ok(warnAlt && /eingestellt/.test(warnAlt),
       "vorhandene IDs mit jahrealten Daten muessen als vermutlich eingestellt gemeldet werden - sonst wiederholt sich der LRHUTTTTEZM156S-Fall");
-    console.log("Block 9/9a (Euro-Probe prueft Existenz UND Aktualitaet der Serien): OK");
+    console.log("Block 9/9a (FRED-Sammelproben: je Frequenzgruppe eine, erkennen Luecken und Veraltetes): OK");
   }
 
   // --- Appname per Umgebungsvariable: Live-Befund HTTP 403 "not using an

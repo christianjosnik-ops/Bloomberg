@@ -405,14 +405,27 @@ async function fetchGdeltTimelineFor(country) {
     .filter((p) => p.date && !isNaN(p.value));
 }
 
-async function fetchGdeltFor(country) {
+// mitTrend steuert, ob zusaetzlich der Zeitverlauf geholt wird.
+//
+// Warum nicht immer: der Trendabruf ist eine ZWEITE Anfrage je Land. Bei einer
+// Welle von fuenf Laendern waeren das zehn gleichzeitige Anfragen an GDELT
+// statt fuenf - gegen eine oeffentliche API, die bei aggressiver Nutzung
+// drosselt. Das war eine Verschlechterung, die mit der Trend-Funktion
+// unbeabsichtigt hereinkam.
+//
+// Der Trend wird deshalb nur fuer Laender geholt, die eine offizielle Quelle
+// als Konfliktland fuehrt. Genau dort ist die Frage "spitzt es sich zu oder
+// klingt es ab?" interessant; fuer ein ruhiges Land waere die Kurve ohnehin
+// flach. Das haelt die Gleichzeitigkeit nahe am alten Wert und macht die
+// Wellen schneller - wovon wiederum das Zeitbudget profitiert.
+async function fetchGdeltFor(country, mitTrend) {
   const q = `"${country.name}" ${CONFLICT_KEYWORDS}`;
   const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&mode=artlist&maxrecords=${GDELT_MAXRECORDS}&timespan=${GDELT_HEADLINES_TIMESPAN}&format=json&sort=datedesc`;
 
-  // Artikelliste UND Trendverlauf gleichzeitig abrufen (nicht nacheinander) -
-  // beide teilen sich PER_REQUEST_TIMEOUT, damit sich die Laufzeit je Land
-  // durch die zweite Abfrage nicht verdoppelt. Der Trend ist best-effort
-  // (allSettled), die Artikelliste bleibt wie bisher hart (wirft bei Fehler).
+  // Wird der Trend geholt, laeuft er gleichzeitig mit der Artikelliste - beide
+  // teilen sich PER_REQUEST_TIMEOUT, damit sich die Laufzeit je Land nicht
+  // verdoppelt. Der Trend ist best-effort (allSettled), die Artikelliste bleibt
+  // hart (wirft bei Fehler).
   const [articlesResult, timelineResult] = await Promise.allSettled([
     (async () => {
       const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } }, PER_REQUEST_TIMEOUT);
@@ -427,7 +440,7 @@ async function fetchGdeltFor(country) {
         headlines: articles.slice(0, GDELT_HEADLINES_SHOWN).map((a) => ({ title: a.title, url: a.url, date: a.seendate ? String(a.seendate).slice(0, 8) : null, source: a.domain || "" })),
       };
     })(),
-    fetchGdeltTimelineFor(country),
+    mitTrend ? fetchGdeltTimelineFor(country) : Promise.resolve([]),
   ]);
 
   if (articlesResult.status === "rejected") throw articlesResult.reason;
@@ -499,7 +512,10 @@ async function buildReport() {
     const wave = watchlist.slice(i, i + WAVE);
     const settled = await Promise.all(wave.map(async (c) => {
       const dyn = dynamicCountries.get(c.iso3) || null;
-      try { return { c, dyn, gdelt: await fetchGdeltFor(c) }; }
+      // Trendverlauf nur fuer Laender, die eine offizielle Quelle als
+      // Konfliktland fuehrt - siehe Begruendung bei fetchGdeltFor.
+      const mitTrend = !!(dyn && (dyn.ucdpActive || dyn.reliefwebActive));
+      try { return { c, dyn, gdelt: await fetchGdeltFor(c, mitTrend) }; }
       catch (e) { return { c, dyn, gdelt: null, err: String(e && e.message || e) }; }
     }));
     for (const r of settled) out[r.c.iso3] = baseEntry(r.c, r.dyn, r.gdelt, r.err || null);

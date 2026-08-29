@@ -1,4 +1,4 @@
-// Netlify Function: /.netlify/functions/fred?ids=UNRATE,CPIAUCSL,...  (Batch, 1 Aufruf fuer alle Serien)
+// Netlify Function: /.netlify/functions/fred?ids=UNRATE,CPIAUCSL,...  (Sammelabruf je Frequenzgruppe, parallel)
 //                    /.netlify/functions/fred?id=UNRATE               (Einzelabruf, Legacy)
 //
 // Makrodaten ausschliesslich ueber den FRED-CSV-Endpunkt (fredgraph.csv), ohne
@@ -25,6 +25,47 @@ const DEFAULT_YEARS = {
   // Euro-Raum (ueber FRED gespiegelte Eurostat-/EZB-Reihen - siehe MACRO_PRESETS in market-data.js)
   ECBDFR: 10, CP0000EZ19M086NEST: 10, IRLTLT01DEM156N: 10, CLVMEURSCAB1GQEA19: 30,
 };
+
+// FREQUENZ je Serie. Steuert, welche Serien gemeinsam in einem Sammelabruf
+// landen duerfen - und das ist keine Feinheit, sondern ein Datenrichtigkeits-
+// Problem:
+//
+// fredgraph ist der Graph-Endpunkt. Traegt man dort Serien unterschiedlicher
+// Frequenz in EIN Diagramm ein, muss FRED sie auf eine gemeinsame Zeitachse
+// bringen. Ob der CSV-Export dabei aggregiert (Tageswerte zu Quartalsmitteln)
+// oder die Zeilen nur zusammenfuehrt und Luecken mit "." fuellt, laesst sich
+// von hier aus nicht pruefen - die Hosts sind gesperrt.
+//
+// Im Aggregationsfall stuende in der Kachel "US-Staatsanleihen 10J" ein
+// Quartalsdurchschnitt statt der aktuellen Rendite: eine Zahl, die plausibel
+// aussieht und trotzdem etwas anderes bedeutet. Wieder die Klasse Fehler, die
+// man nicht bemerkt.
+//
+// Statt zu raten, welches Verhalten gilt, wird das Problem umgangen: innerhalb
+// einer Frequenzgruppe KANN nicht aggregiert werden, weil es nichts anzugleichen
+// gibt. Die Gruppierung ist damit unter beiden Verhaltensweisen korrekt.
+const SERIES_FREQ = {
+  // taeglich bzw. woechentlich
+  DGS10: "taeglich", T10Y2Y: "taeglich", ECBDFR: "taeglich", MORTGAGE30US: "woechentlich",
+  // monatlich
+  UNRATE: "monatlich", CPIAUCSL: "monatlich", FEDFUNDS: "monatlich", PAYEMS: "monatlich",
+  UMCSENT: "monatlich", M2SL: "monatlich", CP0000EZ19M086NEST: "monatlich", IRLTLT01DEM156N: "monatlich",
+  // quartalsweise
+  GDP: "quartal", CLVMEURSCAB1GQEA19: "quartal",
+};
+// Unbekannte Serien bekommen eine eigene Gruppe je ID: lieber ein zusaetzlicher
+// Abruf als eine stillschweigend falsch aggregierte Zahl.
+function freqOf(id) { return SERIES_FREQ[id] || ("unbekannt:" + id); }
+
+function gruppiereNachFrequenz(ids) {
+  const gruppen = new Map();
+  for (const id of ids) {
+    const f = freqOf(id);
+    if (!gruppen.has(f)) gruppen.set(f, []);
+    gruppen.get(f).push(id);
+  }
+  return gruppen;
+}
 
 // ERWARTETE AKTUALITAET je Serie, in Tagen - der wichtigste Schutz gegen eine
 // stille Falschauskunft.
@@ -84,11 +125,13 @@ function markiereAktualitaet(shaped, id, now) {
 // nach drei Fehlschlaegen machte der Circuit Breaker die restlichen sechs Serien
 // gleich mit ("circuit-open"). Ergebnis: F4 MAKRO komplett leer.
 //
-// Loesung: fredgraph.csv kann MEHRERE Serien in einer einzigen Antwort liefern
-// (id=UNRATE,CPIAUCSL,...). Ein Abruf statt zehn - dadurch ist ein grosszuegiger
+// Loesung: fredgraph.csv liefert MEHRERE Serien in einer Antwort
+// (id=UNRATE,CPIAUCSL,...). Statt zehn Abrufen also einer je Frequenzgruppe -
+// derzeit vier -, und die laufen parallel. Dadurch ist ein grosszuegiger
 // Timeout problemlos im Budget, und ein einzelner langsamer Abruf kann keine
-// Kaskade mehr ausloesen.
-const FRED_BATCH_TIMEOUT = 6000;  // ein Sammelabruf fuer alle Serien
+// Kaskade mehr ausloesen. Warum nach Frequenz getrennt wird, steht bei
+// SERIES_FREQ weiter oben.
+const FRED_BATCH_TIMEOUT = 6000;  // je Frequenzgruppe (Gruppen laufen parallel)
 const FRED_CSV_TIMEOUT = 4000;    // Einzelabruf, nur noch als Rueckfallebene
 const FUNCTION_BUDGET_MS = 9000;  // Sicherheitsabstand unter Netlifys 10s-Standardlimit
 const MIN_ATTEMPT_MS = 500;       // unter dieser Restzeit lohnt kein weiterer Versuch mehr
@@ -240,15 +283,30 @@ exports.handler = async (event) => {
   const isBatch = !!qp.ids;
   const raw = (qp.ids || qp.id || "").trim().toUpperCase();
   if (!raw) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: "id(s) fehlen" }) };
-  const ids = raw.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 20);
+  const MAX_IDS = 20;
+  const alleIds = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  const ids = alleIds.slice(0, MAX_IDS);
   if (!ids.length || ids.some((id) => !/^[A-Z0-9]{1,20}$/.test(id))) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: "id ungueltig" }) };
+  // Ueberzaehlige IDs wurden bisher stillschweigend abgeschnitten: die
+  // zugehoerigen Kacheln blieben dauerhaft auf "—" stehen, ohne dass irgendwo
+  // stuende warum. Bei aktuell 14 Serien noch kein Problem, aber genau die Art
+  // stiller Ausfall, die spaeter niemand mehr zuordnet.
+  const abgeschnitten = alleIds.slice(MAX_IDS);
 
   try {
     const deadline = Date.now() + FUNCTION_BUDGET_MS;
     const results = [];
 
-    // SCHRITT 1: Ein einziger Sammelabruf fuer alle Serien. Das ist der Normalweg
-    // und ersetzt die frueheren zehn Einzelanfragen samt Timeout-Kaskade.
+    // SCHRITT 1: Sammelabrufe, EINER JE FREQUENZGRUPPE (siehe SERIES_FREQ).
+    // Nicht mehr ein einziger gemischter Abruf: Serien unterschiedlicher
+    // Frequenz in einem fredgraph-Diagramm koennen aggregiert werden, wodurch
+    // z.B. eine Tagesrendite als Quartalsmittel zurueckkaeme.
+    //
+    // Die Gruppen laufen PARALLEL. Nacheinander wuerden sich ihre Timeouts
+    // addieren (drei Gruppen x 6s = 18s, weit ueber dem Funktionslimit);
+    // parallel kostet die langsamste Gruppe, nicht die Summe. allSettled, damit
+    // eine gescheiterte Gruppe die anderen nicht mitreisst - faellt etwa die
+    // Quartalsgruppe aus, bleiben Tages- und Monatskacheln trotzdem gefuellt.
     const stillMissing = [];
     const cachedHits = {};
     for (const id of ids) {
@@ -257,21 +315,34 @@ exports.handler = async (event) => {
       if (c && Date.now() - c.ts < TTL) cachedHits[id] = c.data; else stillMissing.push(id);
     }
 
-    let batchError = null;
+    const batchFehler = [];
     if (stillMissing.length) {
-      try {
-        const budget = Math.max(MIN_ATTEMPT_MS, Math.min(FRED_BATCH_TIMEOUT, timeLeft(deadline)));
-        const batch = await fromFredCsvBatch(stillMissing, budget);
-        for (const id of Object.keys(batch)) {
+      const gruppen = [...gruppiereNachFrequenz(stillMissing).entries()];
+      const budget = Math.max(MIN_ATTEMPT_MS, Math.min(FRED_BATCH_TIMEOUT, timeLeft(deadline)));
+      const ergebnisse = await Promise.allSettled(
+        gruppen.map(([, gruppenIds]) => fromFredCsvBatch(gruppenIds, budget))
+      );
+      ergebnisse.forEach((r, i) => {
+        const [freq, gruppenIds] = gruppen[i];
+        if (r.status === "rejected") {
+          batchFehler.push(`${freq}: ${String((r.reason && r.reason.message) || r.reason)}`);
+          return;
+        }
+        for (const id of Object.keys(r.value)) {
           const years = Math.min(50, Math.max(1, parseInt(qp.years || DEFAULT_YEARS[id] || 10, 10) || 10));
-          const data = Object.assign({}, batch[id], { source: "fred" });
+          const data = Object.assign({}, r.value[id], { source: "fred" });
           CACHE.set(`${id}:${years}`, { ts: Date.now(), data });
           cachedHits[id] = data;
         }
-      } catch (e) {
-        batchError = String((e && e.message) || e);
-      }
+        // Teilabdeckung benennen: FRED laesst unbekannte IDs stillschweigend
+        // aus der Kopfzeile weg. Ohne diesen Hinweis faenden sich die fehlenden
+        // Serien wortlos in den langsamen Einzelabrufen wieder - und bei vielen
+        // davon reisst das Zeitbudget, ohne dass je klar wuerde warum.
+        const fehlend = gruppenIds.filter((id) => !r.value[id]);
+        if (fehlend.length) batchFehler.push(`${freq}: FRED lieferte keine Spalte fuer ${fehlend.join(", ")}`);
+      });
     }
+    const batchError = batchFehler.length ? batchFehler.join(" | ") : null;
 
     for (const id of ids) if (cachedHits[id]) results.push([id, cachedHits[id]]);
     const remaining = ids.filter((id) => !cachedHits[id]);
@@ -301,6 +372,11 @@ exports.handler = async (event) => {
         if (out[id] && out[id].error) out[id].error += " | Sammelabruf: " + batchError;
       }
     }
+    // Abgeschnittene IDs bekommen einen eigenen, sprechenden Eintrag, statt
+    // wortlos zu fehlen.
+    for (const id of abgeschnitten) {
+      out[id] = { id, error: `mehr als ${MAX_IDS} Serien angefragt – diese wurde nicht abgerufen` };
+    }
     if (!isBatch) return { statusCode: 200, headers: cors, body: JSON.stringify(out[ids[0]]) };
     return { statusCode: 200, headers: { ...cors, "X-Breakers": JSON.stringify(breakerState()) }, body: JSON.stringify(out) };
   } catch (e) {
@@ -309,4 +385,4 @@ exports.handler = async (event) => {
 };
 
 // Fuer Tests: Einzelfunktionen ohne HTTP-Handler-Wrapper zugaenglich machen.
-exports._internal = { fetchOne, fromFredCsv, fromFredCsvBatch, shapeSeries, markiereAktualitaet, MAX_AGE_DAYS, MAX_AGE_FALLBACK_DAYS, FUNCTION_BUDGET_MS, MIN_ATTEMPT_MS, BATCH_YEARS };
+exports._internal = { fetchOne, fromFredCsv, fromFredCsvBatch, shapeSeries, gruppiereNachFrequenz, freqOf, SERIES_FREQ, markiereAktualitaet, MAX_AGE_DAYS, MAX_AGE_FALLBACK_DAYS, FUNCTION_BUDGET_MS, MIN_ATTEMPT_MS, BATCH_YEARS };
