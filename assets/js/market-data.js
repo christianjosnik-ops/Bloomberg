@@ -1,7 +1,7 @@
 // market-data.js — Presets/Konstanten + Datenbeschaffungs-Helfer (Yahoo-Proxy,
 // Finnhub, FRED-Batch, Groq). Kein JSX. Dual-Export wie ratios.js/peers.js/
 // theme.js: laeuft unveraendert in Node (Tests) und im Browser (<script
-// src="market-data.js">, ohne Babel - dieser Code enthaelt kein JSX).
+// src="assets/js/market-data.js">, ohne Babel - dieser Code enthaelt kein JSX).
 //
 // Ausgelagert aus index.html, um die Menge an JSX-Code zu verkleinern, die
 // Babel bei jedem Seitenaufruf live im Browser kompilieren muss, und um die

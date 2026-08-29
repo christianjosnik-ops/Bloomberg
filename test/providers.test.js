@@ -1,10 +1,10 @@
 // providers.test.js — Unit-Tests fuer die Fallback-Ketten-/Circuit-Breaker-Logik.
-// Kein Test-Framework, nur Node + assert:  node providers.test.js
+// Kein Test-Framework, nur Node + assert:  node test/providers.test.js
 // Alle Provider hier sind Fakes - es geht ausschliesslich um die Ablauflogik,
 // nicht um echte HTTP-Aufrufe.
 
 const assert = require("assert");
-const P = require("./netlify/functions/lib/providers.js");
+const P = require("../netlify/functions/lib/providers.js");
 
 function ok(name, value) { return { name: name, run: async () => value }; }
 function fails(name, msg) { return { name: name, run: async () => { throw new Error(msg || "kaputt"); } }; }

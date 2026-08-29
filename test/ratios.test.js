@@ -1,9 +1,9 @@
 // ratios.test.js — Unit-Tests fuer ratios.js. Bewusst ohne Test-Framework
-// (kein Jest/Vitest/Mocha), nur Node-Bordmittel: assert + node ratios.test.js.
+// (kein Jest/Vitest/Mocha), nur Node-Bordmittel: assert + node test/ratios.test.js.
 // Referenzwerte wurden von Hand nachgerechnet (siehe Kommentare je Block).
 
 const assert = require("assert");
-const { computeRatios, dupont, div, avg } = require("./ratios.js");
+const { computeRatios, dupont, div, avg } = require("../assets/js/ratios.js");
 
 function closeTo(actual, expected, eps, msg) {
   eps = eps == null ? 1e-9 : eps;
