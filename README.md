@@ -27,7 +27,7 @@ assets/js/                   Reine Rechenlogik, ohne JSX und ohne Babel.
 netlify/functions/           Serverseitige Proxys (CommonJS, nur Node)
   quote.js                   Yahoo-Finance-Proxy (Kurse, Kennzahlen, Profil)
   fred.js                    Makrodaten (F4)
-  geopolitics.js             Weltlage aus GDELT/UCDP/ReliefWeb (F6)
+  geopolitics.js             Weltlage aus UCDP + GDELT (F6)
   diag.js                    Diagnose: probiert jede Quelle einzeln an
   lib/
     providers.js             Fallback-Ketten + Circuit Breaker
@@ -70,11 +70,40 @@ In den Netlify-Einstellungen der Seite zu hinterlegen, nicht im Repository:
 | Variable            | Wofuer                                        | Pflicht |
 | ------------------- | --------------------------------------------- | ------- |
 | `FRED_API_KEY`      | Makrodaten (FRED verlangt seit 11/2025 einen Schluessel) | ja, sonst bleibt F4 leer |
-| `UCDP_ACCESS_TOKEN` | Konfliktdaten fuer die Weltlage (UCDP)        | ja, sonst faellt F6 auf weniger Quellen zurueck |
-| `RELIEFWEB_APPNAME` | ReliefWeb-Quelle in der Weltlage              | nein; ohne Appname wird ReliefWeb gar nicht erst angefragt |
+| `UCDP_ACCESS_TOKEN` | Konfliktdaten fuer die Weltlage (UCDP)        | nein, aber ohne ihn laeuft F6 stark eingeschraenkt (siehe unten) |
 
 Der FRED-Schluessel laesst sich alternativ im Startbildschirm der App
 eingeben - dann bleibt er im Browser und die Server-Variable ist entbehrlich.
 
 Finnhub- und Groq-Schluessel werden ausschliesslich in der App eingegeben und
 liegen im Browser, nie auf dem Server.
+
+### UCDP-Zugangstoken beantragen
+
+UCDP liefert die dynamische Liste aktiver Konfliktlaender. Der Zugang ist
+kostenlos, verlangt aber seit Kurzem einen Token (ohne ihn antwortet die API
+mit `HTTP 401 – API token required`).
+
+Der Token wird **nicht automatisch** vergeben, es gibt kein Web-Formular. Man
+schreibt eine Mail:
+
+- **An:** `mertcan.yilmaz@pcr.uu.se` (allgemeine Rueckfragen: `ucdp@pcr.uu.se`)
+- **Betreff:** `UCDP API Access Request`
+- **Inhalt:** vollstaendiger Name, Zugehoerigkeit (Universitaet/Firma/privat),
+  Rolle (z.B. Studierender, Journalist, Analyst) und eine kurze Beschreibung,
+  wozu die Daten genutzt werden sollen
+
+Antwort kommt laut UCDP innerhalb von 3-5 Werktagen. Das Kontingent liegt bei
+5000 Anfragen/Tag - fuer diese App bei 20 Minuten Cache weit mehr als genug.
+
+Doku: https://ucdp.uu.se/apidocs/
+
+Danach in Netlify unter *Site configuration → Environment variables* als
+`UCDP_ACCESS_TOKEN` hinterlegen. Die App schickt ihn als Header
+`x-ucdp-access-token`.
+
+**Ohne Token** faellt F6 auf die handgepflegte 20-Laender-Liste in
+`netlify/functions/lib/geo-countries.js` zurueck, und die Risikoeinstufung
+haengt allein am GDELT-Nachrichtenvolumen - die Stufe "kritisch" ist dann
+rechnerisch nicht mehr erreichbar, weil sie eine offizielle Konfliktquelle
+voraussetzt.

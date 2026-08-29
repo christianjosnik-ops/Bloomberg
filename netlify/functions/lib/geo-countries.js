@@ -2,12 +2,11 @@
 // Konstanten/Hilfsfunktionen, kein Fetch. CommonJS, laeuft serverseitig in
 // geopolitics.js.
 //
-// FESTE BEOBACHTUNGSLISTE: Ergaenzt die dynamisch aus ReliefWeb ermittelten
-// Laender (aktive Krisen) um ein paar geopolitisch dauerhaft relevante
-// Staaten, die nicht immer als "Katastrophe" im ReliefWeb-Sinn gefuehrt
-// werden (z.B. Taiwan/China-Spannung). Das ist eine von Hand kuratierte,
-// bewusst kurze Auswahl - keine erschoepfende Weltabdeckung. Wird im UI
-// so kommuniziert.
+// FESTE BEOBACHTUNGSLISTE: Ergaenzt die dynamisch aus UCDP ermittelten
+// Konfliktlaender um ein paar geopolitisch dauerhaft relevante Staaten, die
+// nicht durchgehend als aktiver Konflikt gefuehrt werden (z.B. Taiwan/China-
+// Spannung). Das ist eine von Hand kuratierte, bewusst kurze Auswahl - keine
+// erschoepfende Weltabdeckung. Wird im UI so kommuniziert.
 // WICHTIG seit UCDP einen Zugangstoken verlangt (HTTP 401): Diese Liste war
 // urspruenglich nur eine Ergaenzung zu den dynamisch von UCDP gemeldeten
 // Konfliktlaendern. Faellt UCDP mangels Token weg, ist sie die EINZIGE Quelle
@@ -40,7 +39,7 @@ const FIXED_WATCHLIST = [
   { iso2: "ML", iso3: "MLI", name: "Mali" },
   { iso2: "SO", iso3: "SOM", name: "Somalia" },
 ];
-const MAX_WATCHLIST = 20; // Obergrenze gesamt (fest + aus ReliefWeb) - begrenzt Laufzeit/Anfragen
+const MAX_WATCHLIST = 20; // Obergrenze gesamt (fest + aus UCDP) - begrenzt Laufzeit/Anfragen
 
 // Flaggen-Emoji rein rechnerisch aus dem ISO-3166-1-Alpha-2-Code (Unicode
 // "Regional Indicator Symbols") - keine externe Bilddatei/Datenquelle noetig.
@@ -53,17 +52,17 @@ function flagEmoji(iso2) {
   return String.fromCodePoint(A + c0, A + c1);
 }
 
-// Fuegt ReliefWeb-Laender (mit iso3/iso2/name) zur festen Liste hinzu, ohne
-// Duplikate, gedeckelt auf MAX_WATCHLIST. ReliefWeb-Laender zuerst (das ist
-// das aktuellere, datengetriebene Signal), feste Liste fuellt auf.
-function buildWatchlist(reliefwebCountries) {
+// Fuegt die dynamisch gemeldeten Laender (mit iso3/iso2/name) zur festen Liste
+// hinzu, ohne Duplikate, gedeckelt auf MAX_WATCHLIST. Die dynamischen Laender
+// zuerst (das ist das aktuellere, datengetriebene Signal), feste Liste fuellt auf.
+function buildWatchlist(dynamicCountries) {
   const seen = new Set();
   const out = [];
   const add = (c) => {
     if (!c || !c.iso3 || seen.has(c.iso3) || out.length >= MAX_WATCHLIST) return;
     seen.add(c.iso3); out.push(c);
   };
-  (reliefwebCountries || []).forEach(add);
+  (dynamicCountries || []).forEach(add);
   FIXED_WATCHLIST.forEach(add);
   return out;
 }

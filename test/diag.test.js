@@ -35,7 +35,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
       text: async () => JSON.stringify({ error: { message: "Invalid value 'current' for filter[value]" } }),
     });
     const { probe } = fresh()._internal;
-    const r = await probe({ key: "rw", label: "ReliefWeb", url: "https://example.invalid/b" });
+    const r = await probe({ key: "gd", label: "GDELT", url: "https://example.invalid/b" });
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.status, 400);
     assert.ok(r.bodySnippet.includes("Invalid value"), "der erklaerende Fehlertext MUSS im Auszug landen - er ist der ganze Zweck der Diagnose");
@@ -59,7 +59,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
 
   // --- Netzwerkfehler: .cause enthaelt bei fetch oft erst den echten Grund ---
   {
-    global.fetch = async () => { throw Object.assign(new TypeError("fetch failed"), { cause: new Error("getaddrinfo ENOTFOUND api.reliefweb.int") }); };
+    global.fetch = async () => { throw Object.assign(new TypeError("fetch failed"), { cause: new Error("getaddrinfo ENOTFOUND ucdpapi.pcr.uu.se") }); };
     const { probe } = fresh()._internal;
     const r = await probe({ key: "dns", label: "DNS", url: "https://example.invalid/d" });
     assert.strictEqual(r.ok, false);
@@ -86,12 +86,12 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
   {
     global.fetch = async () => { throw new Error("alles kaputt"); };
     const diag = fresh();
-    const res = await diag.handler({ httpMethod: "GET", queryStringParameters: { only: "reliefweb" } });
+    const res = await diag.handler({ httpMethod: "GET", queryStringParameters: { only: "gdelt" } });
     assert.strictEqual(res.statusCode, 200, "die Diagnose selbst darf nie fehlschlagen - sonst diagnostiziert sie nichts mehr");
     const body = JSON.parse(res.body);
-    // 4 Proben: der v1-Beleg (erwartet 410) + die drei v2-Abfrageformen.
-    assert.strictEqual(body.proben.length, 4, "only=reliefweb muss alle ReliefWeb-Proben auswaehlen (v1-Beleg + drei v2-Formen)");
-    assert.strictEqual(body.zusammenfassung.fehlgeschlagen.length, 4);
+    // 2 Proben: die Artikelliste und der Trendverlauf.
+    assert.strictEqual(body.proben.length, 2, "only=gdelt muss beide GDELT-Proben auswaehlen (Artikelliste + Trendverlauf)");
+    assert.strictEqual(body.zusammenfassung.fehlgeschlagen.length, 2);
     assert.ok(body.laufzeitumgebung.node, "Node-Version gehoert in den Bericht");
     // Sicherheitsnetz: es darf nichts Geheimes im Bericht landen
     const asText = JSON.stringify(body);
@@ -174,29 +174,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const warnAlt = p.expect(`${kopf}\n${zeile("2022-12-01")}\n${zeile("2023-01-01")}`);
     assert.ok(warnAlt && /eingestellt/.test(warnAlt),
       "vorhandene IDs mit jahrealten Daten muessen als vermutlich eingestellt gemeldet werden - sonst wiederholt sich der LRHUTTTTEZM156S-Fall");
-    console.log("Block 9a/13 (FRED-Sammelproben: je Frequenzgruppe eine, erkennen Luecken und Veraltetes): OK");
-  }
-
-  // --- Appname per Umgebungsvariable: Live-Befund HTTP 403 "not using an
-  //     approved appname" bei ReliefWeb v2 - kein Code-Fix moeglich, aber die
-  //     URL muss den ueber ENV gesetzten (spaeter genehmigten) Appnamen tragen ---
-  {
-    delete require.cache[require.resolve(path)];
-    let { PROBES } = require(path)._internal;
-    const rwProbesDefault = PROBES.filter((p) => p.key.startsWith("reliefweb"));
-    assert.ok(rwProbesDefault.length >= 3 && rwProbesDefault.every((p) => p.url.includes("appname=terminal-app-geopolitics")),
-      "ohne RELIEFWEB_APPNAME muss der bisherige Standard-Appname in allen ReliefWeb-Proben stehen");
-    assert.ok(rwProbesDefault.every((p) => !p.url.includes("country.iso2")),
-      "country.iso2 wird von ReliefWeb v2 abgelehnt (Live-Beleg HTTP 400) und darf in keiner Probe mehr vorkommen");
-
-    process.env.RELIEFWEB_APPNAME = "mein-genehmigter-appname";
-    delete require.cache[require.resolve(path)];
-    ({ PROBES } = require(path)._internal);
-    delete process.env.RELIEFWEB_APPNAME;
-    const rwProbesEnv = PROBES.filter((p) => p.key.startsWith("reliefweb"));
-    assert.ok(rwProbesEnv.length >= 3 && rwProbesEnv.every((p) => p.url.includes("appname=mein-genehmigter-appname")),
-      "ein per Umgebungsvariable gesetzter Appname muss in ALLEN ReliefWeb-Proben ankommen (auch dem v1-Beleg)");
-    console.log("Block 9b/13 (Appname konfigurierbar, country.iso2 dauerhaft entfernt): OK");
+    console.log("Block 9/15 (FRED-Sammelproben: je Frequenzgruppe eine, erkennen Luecken und Veraltetes): OK");
   }
 
   // --- UCDP: die neue Hauptquelle fuer F6 hat eigene Beleg-Proben ---
@@ -238,7 +216,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
 
   // --- Der Fehler, den der Livebetrieb aufgedeckt hat: vier tote FRED-Proben
   //     a 6s ergaben sequenziell 24s und sprengten das interne 20s-Budget.
-  //     Alles danach - UCDP, ReliefWeb, GDELT, Yahoo, Stooq, Frankfurter -
+  //     Alles danach - UCDP, GDELT, Yahoo, Stooq, Frankfurter -
   //     wurde uebersprungen, der Bericht meldete "0 OK". Die Diagnose verschwieg
   //     also ausgerechnet die Quellen, die funktionieren. Sie MUSS parallel
   //     laufen: dann kostet der Durchlauf so viel wie die langsamste Probe. ---

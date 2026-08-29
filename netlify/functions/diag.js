@@ -5,15 +5,15 @@
 // Auszug des Antwortkoerpers.
 //
 // Warum es das gibt: Die Entwicklungsumgebung erreicht fred.stlouisfed.org,
-// api.reliefweb.int und ucdpapi.pcr.uu.se nicht (Egress-Richtlinie blockt
-// CONNECT mit 403). Fehler wie "ReliefWeb nicht erreichbar" lassen sich von
+// ucdpapi.pcr.uu.se nicht (Egress-Richtlinie blockt
+// CONNECT mit 403). Fehler wie "UCDP nicht erreichbar" lassen sich von
 // dort also nicht nachstellen. Diese Function laeuft dagegen auf Netlify, wo
 // die echten Aufrufe stattfinden - ihr Ergebnis zeigt den konkreten Grund
 // (falscher Filterwert, Bot-Sperre, geaenderter Pfad, Zeitueberschreitung...)
 // statt nur "hat nicht geklappt".
 //
 // Aufruf:  /.netlify/functions/diag           (alle Quellen)
-//          /.netlify/functions/diag?only=reliefweb
+//          /.netlify/functions/diag?only=gdelt
 //
 // Sicherheit: Es werden KEINE Schluesselwerte, Cookies oder Anfrage-Header
 // ausgegeben - nur Statuszeilen und ein gekuerzter Auszug des Antwortkoerpers.
@@ -66,24 +66,8 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 // Aus fred.js/geopolitics.js gespiegelt, damit die Diagnose GENAU die URLs
 // prueft, die im Betrieb verwendet werden. Weichen die Dateien auseinander,
 // diagnostiziert man sonst etwas anderes als das, was tatsaechlich laeuft.
-//
-// Live-Beleg: "country.iso2" wurde mit HTTP 400 "Unrecognized field
-// 'country.iso2' in parameter 'fields'" abgelehnt - dieses Feld gibt es im
-// ReliefWeb-v2-Schema nicht (nur iso3). Deshalb entfernt.
-const RW_FIELDS = "&fields[include][]=name&fields[include][]=date.created&fields[include][]=type.name"
-  + "&fields[include][]=country.iso3&fields[include][]=country.name";
-// Live-Beleg: die feldlose Rueckfallebene lieferte HTTP 403 "You are not
-// using an approved appname" - ReliefWeb v2 verlangt inzwischen einen
-// REGISTRIERTEN Appnamen (anders als v1). Das ist kein URL-Formfehler, den
-// Code beheben kann, sondern eine externe Registrierung. Ueber Umgebungs-
-// variable konfigurierbar, damit ein spaeter genehmigter Appname ohne
-// Redeploy eingetragen werden kann.
-const RELIEFWEB_APPNAME = process.env.RELIEFWEB_APPNAME || "terminal-app-geopolitics";
 const UCDP_TOKEN = process.env.UCDP_ACCESS_TOKEN || "";
 const FRED_ENV_KEY = process.env.FRED_API_KEY || "";
-const RELIEFWEB_BASE = "https://api.reliefweb.int/v2/disasters"
-  + "?appname=" + encodeURIComponent(RELIEFWEB_APPNAME) + RW_FIELDS + "&sort[]=date.created:desc&limit=5";
-
 const PROBES = [
   // --- Trennschaerfe-Proben: warum antwortet FRED nicht? ---------------------
   //
@@ -203,34 +187,6 @@ const PROBES = [
     }
     return proben;
   })(),
-  {
-    // Beleg-Probe: v1 wurde abgeschaltet (HTTP 410). Bleibt drin, damit man
-    // schwarz auf weiss sieht, WARUM auf v2 umgestellt wurde - und sofort
-    // merkt, falls sich daran je etwas aendern sollte.
-    key: "reliefweb-v1-abgeschaltet",
-    label: "ReliefWeb v1 (abgeschaltet – erwartet HTTP 410)",
-    url: "https://api.reliefweb.int/v1/disasters?appname=" + encodeURIComponent(RELIEFWEB_APPNAME) + "&limit=1",
-    headers: { "Accept": "application/json", "User-Agent": UA },
-    expectStatus: 410,
-  },
-  {
-    key: "reliefweb-v2-filtered",
-    label: "ReliefWeb v2 MIT Statusfilter alert/ongoing (Hauptpfad)",
-    url: RELIEFWEB_BASE + "&filter[field]=status&filter[value][]=alert&filter[value][]=ongoing",
-    headers: { "Accept": "application/json", "User-Agent": UA },
-  },
-  {
-    key: "reliefweb-v2-plain",
-    label: "ReliefWeb v2 OHNE Filter (Rueckfallebene 1)",
-    url: RELIEFWEB_BASE,
-    headers: { "Accept": "application/json", "User-Agent": UA },
-  },
-  {
-    key: "reliefweb-v2-minimal",
-    label: "ReliefWeb v2 ohne Feldauswahl (Rueckfallebene 2)",
-    url: "https://api.reliefweb.int/v2/disasters?appname=" + encodeURIComponent(RELIEFWEB_APPNAME) + "&limit=5",
-    headers: { "Accept": "application/json", "User-Agent": UA },
-  },
   {
     key: "gdelt",
     label: "GDELT (Weltlage, Nachrichtenvolumen – Hauptpfad mit 7-Tage-Fenster)",
@@ -378,7 +334,7 @@ exports.handler = async (event) => {
   // Vorher liefen die Proben sequenziell, mit der Begruendung, sie wuerden sich
   // sonst gegenseitig das Zeitbudget nehmen. Der Livebetrieb hat gezeigt, dass
   // genau das Gegenteil eintritt: vier tote FRED-Proben a 6s ergaben 24s und
-  // sprengten das 20s-Budget - alles danach (UCDP, ReliefWeb, GDELT, Yahoo,
+  // sprengten das 20s-Budget - alles danach (UCDP, GDELT, Yahoo,
   // Stooq, Frankfurter) wurde uebersprungen. Der Bericht meldete "0 OK" und
   // verschwieg ausgerechnet die Quellen, die funktionieren.
   //
@@ -440,16 +396,6 @@ exports.handler = async (event) => {
           hinweis: UCDP_TOKEN
             ? null
             : "Optional. Ohne Token laeuft F6 auf der kuratierten 20-Laender-Liste. Token gratis per Mail an mertcan.yilmaz@pcr.uu.se.",
-        },
-        {
-          name: "RELIEFWEB_APPNAME",
-          zweck: "F6 WELTLAGE – zusaetzliche Krisenmeldungen (UN OCHA)",
-          gesetzt: !!process.env.RELIEFWEB_APPNAME,
-          quelle: process.env.RELIEFWEB_APPNAME ? "aus RELIEFWEB_APPNAME" : null,
-          laenge: (process.env.RELIEFWEB_APPNAME || "").length,
-          hinweis: process.env.RELIEFWEB_APPNAME
-            ? null
-            : "Optional. ReliefWeb v2 verlangt einen vorab registrierten Appnamen; ohne den wird die Quelle uebersprungen.",
         },
       ],
       zusammenfassung: summary,

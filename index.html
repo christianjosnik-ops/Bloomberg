@@ -806,7 +806,7 @@ function DiagPanel({ diag, diagBusy, diagErr, runDiag }) {
       style={{ marginBottom: 8 }}
     >
       {!diag && !diagBusy && !diagErr && (
-        <div className="muted">Fragt jede Quelle (FRED USA+Euro-Raum, UCDP, ReliefWeb, GDELT, Yahoo, Stooq, Frankfurter) einzeln ab und zeigt den echten Statuscode samt Antworttext. Dauert bis zu 30 Sekunden.</div>
+        <div className="muted">Fragt jede Quelle (FRED USA+Euro-Raum, UCDP, GDELT, Yahoo, Stooq, Frankfurter) einzeln ab und zeigt den echten Statuscode samt Antworttext. Dauert bis zu 30 Sekunden.</div>
       )}
       {diagBusy && <div className="muted">Prüfe alle Quellen nacheinander… das dauert bis zu 30 Sekunden.</div>}
       {diagErr && <div className="note note--err">{diagErr}</div>}
@@ -998,14 +998,14 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
   return (
     <div className="page">
       <div className="toolbar">
-        <span className="muted">Geopolitische Risikoübersicht · GDELT (Nachrichtenvolumen) + UCDP (Konfliktdaten){geo?.reliefwebError == null ? " + ReliefWeb/UN OCHA" : ""}</span>
+        <span className="muted">Geopolitische Risikoübersicht · GDELT (Nachrichtenvolumen) + UCDP (Konfliktdaten)</span>
         <div className="spacer" />
         <button className="btn btn--ghost" onClick={loadGeo} disabled={geoBusy}>{geoBusy ? "…" : "↻ AKTUALISIEREN"}</button>
       </div>
 
       <div className="note" style={{ marginBottom: 8 }}>
         <div>Beobachtete Länder: aktive UCDP-Konfliktländer + eine von Hand kuratierte, kurze Liste geopolitisch dauerhaft relevanter Staaten (max. 20). <b style={{ color: C.text }}>Keine erschöpfende Weltabdeckung.</b></div>
-        <div>Stufe kombiniert: GDELT-Artikelvolumen (Konflikt-Schlagwörter, 7 Tage) + ob UCDP oder ReliefWeb aktuell einen Konflikt für das Land führt. {geo?.generatedAt && <span>Stand: {new Date(geo.generatedAt).toLocaleString("de-DE")}</span>}</div>
+        <div>Stufe kombiniert: GDELT-Artikelvolumen (Konflikt-Schlagwörter, 7 Tage) + ob UCDP aktuell einen Konflikt für das Land führt. {geo?.generatedAt && <span>Stand: {new Date(geo.generatedAt).toLocaleString("de-DE")}</span>}</div>
         {/* Zwei verschiedene Dinge, die nicht gleich aussehen duerfen: ein
             echter Ausfall verlangt Aufmerksamkeit, eine bewusst uebersprungene
             Zusatzquelle nicht. UCDP verlangt seit Kurzem einen kostenlosen
@@ -1015,7 +1015,6 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
           ? <div className="muted" style={{ marginTop: 3 }}>UCDP-Konfliktdaten nicht aktiviert ({geo.ucdpError}) — die Länderauswahl kommt aus der kuratierten Liste, GDELT ist unabhängig davon aktiv.</div>
           : <div style={{ color: C.amber, marginTop: 3 }}>⚠ UCDP nicht erreichbar ({geo.ucdpError}) — nur feste Länderliste + GDELT aktiv.</div>
         )}
-        {geo?.reliefwebError && !/übersprungen/.test(geo.reliefwebError) && <div style={{ color: C.amber, marginTop: 3 }}>⚠ ReliefWeb nicht erreichbar ({geo.reliefwebError}).</div>}
       </div>
 
       {geoErr && <div className="note note--err" style={{ marginBottom: 8 }}>Fehler beim Laden: {geoErr}</div>}
@@ -1023,11 +1022,10 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
 
       {/* Nur bei tatsaechlichem Problem einblenden - genau dann ist die Frage
           "warum kommt hier nichts an?" offen, und genau die beantwortet das Panel.
-          ReliefWebs Skip-Meldung ("übersprungen: kein Appname") ist erwartetes
+          UCDPs Skip-Meldung ("übersprungen: kein Zugangstoken") ist erwartetes
           Verhalten, kein Ausfall - loest das Panel deshalb nicht aus. */}
       {(geoErr
-        || (geo?.ucdpError && !/übersprungen/.test(geo.ucdpError))
-        || (geo?.reliefwebError && !/übersprungen/.test(geo.reliefwebError))) && (
+        || (geo?.ucdpError && !/übersprungen/.test(geo.ucdpError))) && (
         <DiagPanel diag={diag} diagBusy={diagBusy} diagErr={diagErr} runDiag={runDiag} />
       )}
 
@@ -1045,7 +1043,7 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
                   <span style={{ fontSize: "var(--fs-2xs)", color: meta.color, fontWeight: 700, letterSpacing: 0.6 }}>{meta.label}</span>
                 </div>
                 <div style={{ color: C.white, fontSize: "var(--fs-sm)", marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.name}</div>
-                <div className="muted" style={{ marginTop: 3 }}>{c.gdeltCount} Meldungen{c.ucdpActive ? " · UCDP aktiv" : ""}{c.reliefwebActive ? " · ReliefWeb aktiv" : ""}</div>
+                <div className="muted" style={{ marginTop: 3 }}>{c.gdeltCount} Meldungen{c.ucdpActive ? " · UCDP aktiv" : ""}</div>
               </div>
             );
           })}
@@ -1061,13 +1059,6 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
               <div style={{ fontSize: "var(--fs-2xs)", letterSpacing: 1.2, marginBottom: 4, fontWeight: 700 }}>UCDP · KONFLIKTEREIGNIS ERFASST</div>
               <div style={{ color: C.white, fontSize: "var(--fs-sm)" }}>Uppsala Conflict Data Program führt für dieses Land ein aktuelles Ereignis.</div>
               {selCountry.ucdpDate && <div className="muted" style={{ marginTop: 4 }}>{selCountry.ucdpDate}</div>}
-            </div>
-          )}
-          {selCountry.reliefwebActive && (
-            <div className="note note--warn" style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: "var(--fs-2xs)", letterSpacing: 1.2, marginBottom: 4, fontWeight: 700 }}>RELIEFWEB / UN OCHA{selCountry.reliefwebType ? " · " + selCountry.reliefwebType.toUpperCase() : ""}</div>
-              <div style={{ color: C.white, fontSize: "var(--fs-sm)" }}>{selCountry.reliefwebHeadline}</div>
-              {selCountry.reliefwebDate && <div className="muted" style={{ marginTop: 4 }}>{selCountry.reliefwebDate}</div>}
             </div>
           )}
           {selCountry.gdeltTrend?.length >= 2 && (<>
@@ -1317,7 +1308,7 @@ function App() {
   };
   useEffect(() => { if (connected && tab === "makro" && !Object.keys(macro).length) loadMacro(); }, [connected, tab]);
 
-  /* F6 WELTLAGE: Geopolitische Risikoübersicht (GDELT + ReliefWeb) */
+  /* F6 WELTLAGE: Geopolitische Risikoübersicht (UCDP + GDELT) */
   const [geo, setGeo] = useState(null); const [geoBusy, setGeoBusy] = useState(false); const [geoErr, setGeoErr] = useState("");
   const [geoSel, setGeoSel] = useState(null);
   const loadGeo = async () => {
@@ -1333,8 +1324,8 @@ function App() {
 
   /* Diagnose: fragt jede externe Datenquelle einzeln ab und zeigt, was wirklich
      zurueckkommt. Hintergrund: In der Entwicklungsumgebung sind fred.stlouisfed.org,
-     api.reliefweb.int und api.db.nomics.world per Egress-Richtlinie gesperrt -
-     Fehler wie "ReliefWeb nicht erreichbar" lassen sich dort nicht nachstellen.
+     ucdpapi.pcr.uu.se und api.gdeltproject.org per Egress-Richtlinie gesperrt -
+     Fehler wie "UCDP nicht erreichbar" lassen sich dort nicht nachstellen.
      Auf Netlify laeuft der Aufruf dagegen echt, und dieses Panel macht den
      konkreten Grund (Statuscode + Antworttext) sichtbar. */
   const [diag, setDiag] = useState(null); const [diagBusy, setDiagBusy] = useState(false); const [diagErr, setDiagErr] = useState("");
