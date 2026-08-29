@@ -101,11 +101,11 @@
   // Server-Antwort den "lädt…"-Zustand einer Ansicht auf ewig einfrieren, ohne
   // dass jemals ein Fehler sichtbar wird - der try/catch drumherum kommt nie
   // zum Zug, weil das fetch-Promise selbst nie fertig wird.
-  async function jgetTimeout(u, ms) {
+  async function jgetTimeout(u, ms, headers) {
     const ctrl = new AbortController();
     const to = setTimeout(() => ctrl.abort(), ms || 15000);
     try {
-      const r = await fetch(u, { signal: ctrl.signal });
+      const r = await fetch(u, { signal: ctrl.signal, headers: headers || undefined });
       return await r.json();
     } catch (e) {
       if (ctrl.signal.aborted) throw new Error(`Zeitüberschreitung nach ${((ms || 15000) / 1000).toFixed(0)}s`);
@@ -124,8 +124,18 @@
   const jget = (u) => jgetTimeout(u, JGET_DEFAULT_TIMEOUT_MS);
   const keyOf = (e) => e.y || e.s;
 
-  async function fredGetBatch(ids) {
-    return jgetTimeout(`${FRED_FN}?ids=${encodeURIComponent(ids.join(","))}`, 15000);
+  // Der FRED-Schluessel geht als HEADER mit, nicht als Anfrageparameter.
+  // In der URL stuende er in Netlifys Zugriffsprotokoll, im Browserverlauf und
+  // im Referrer; im Header steht er in keinem davon. Ist kein Schluessel
+  // eingetragen, wird gar kein Header gesetzt - dann greift serverseitig die
+  // Umgebungsvariable FRED_API_KEY, falls es sie gibt.
+  async function fredGetBatch(ids, fredKey) {
+    const k = (fredKey || "").trim();
+    return jgetTimeout(
+      `${FRED_FN}?ids=${encodeURIComponent(ids.join(","))}`,
+      15000,
+      k ? { "X-FRED-Key": k } : undefined
+    );
   }
 
   /* Data layer (nur Finnhub/US — läuft garantiert im Browser) */

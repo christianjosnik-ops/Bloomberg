@@ -24,7 +24,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.strictEqual(r.dataArrayLength, 1, "Laenge des data-Arrays muss gemeldet werden");
     assert.ok(typeof r.ms === "number", "Dauer muss gemessen werden");
     assert.ok(r.bodySnippet.includes("Test"));
-    console.log("Block 1/13 (Erfolgsfall: Status/JSON-Struktur/Dauer): OK");
+    console.log("Block 1/15 (Erfolgsfall: Status/JSON-Struktur/Dauer): OK");
   }
 
   // --- 400 mit Fehlertext: der Koerper ist die eigentliche Information ---
@@ -39,7 +39,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.status, 400);
     assert.ok(r.bodySnippet.includes("Invalid value"), "der erklaerende Fehlertext MUSS im Auszug landen - er ist der ganze Zweck der Diagnose");
-    console.log("Block 2/13 (4xx: Fehlertext des Servers bleibt erhalten): OK");
+    console.log("Block 2/15 (4xx: Fehlertext des Servers bleibt erhalten): OK");
   }
 
   // --- Zeitueberschreitung: klare Meldung statt Haenger ---
@@ -54,7 +54,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.strictEqual(r.ok, false);
     assert.ok(/Zeitueberschreitung/.test(r.error), "muss die Zeitueberschreitung benennen, statt einen rohen Abbruch zu melden");
     assert.ok(dt < 8000, "die Probe muss selbst abbrechen (gemessen: " + dt + "ms)");
-    console.log("Block 3/13 (Zeitueberschreitung sauber gemeldet, " + (dt / 1000).toFixed(1) + "s): OK");
+    console.log("Block 3/15 (Zeitueberschreitung sauber gemeldet, " + (dt / 1000).toFixed(1) + "s): OK");
   }
 
   // --- Netzwerkfehler: .cause enthaelt bei fetch oft erst den echten Grund ---
@@ -65,7 +65,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.error, "fetch failed");
     assert.ok(/ENOTFOUND/.test(r.errorCause), "der eigentliche Grund steckt in .cause und darf nicht verlorengehen");
-    console.log("Block 4/13 (Netzwerkfehler: .cause wird mitgemeldet): OK");
+    console.log("Block 4/15 (Netzwerkfehler: .cause wird mitgemeldet): OK");
   }
 
   // --- Kaputtes JSON trotz JSON-Content-Type darf die Diagnose nicht abschiessen ---
@@ -79,7 +79,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const r = await probe({ key: "html", label: "HTML statt JSON", url: "https://example.invalid/e" });
     assert.ok(r.jsonParseError, "muss den Parse-Fehler melden statt zu werfen");
     assert.ok(r.bodySnippet.includes("Cloudflare"), "der HTML-Auszug entlarvt die Bot-Sperre");
-    console.log("Block 5/13 (HTML statt JSON: Bot-Sperre wird sichtbar): OK");
+    console.log("Block 5/15 (HTML statt JSON: Bot-Sperre wird sichtbar): OK");
   }
 
   // --- Handler: Gesamtantwort ist gueltiges JSON mit Zusammenfassung, auch wenn alles scheitert ---
@@ -96,7 +96,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     // Sicherheitsnetz: es darf nichts Geheimes im Bericht landen
     const asText = JSON.stringify(body);
     assert.ok(!/token=|apikey=|api_key=|Cookie/i.test(asText), "der Bericht darf keine Schluessel oder Cookies enthalten");
-    console.log("Block 6/13 (Handler: robust + keine Geheimnisse im Bericht): OK");
+    console.log("Block 6/15 (Handler: robust + keine Geheimnisse im Bericht): OK");
   }
 
   // --- expectStatus: eine Probe, die fehlschlagen SOLL, gilt als bestanden ---
@@ -114,7 +114,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.strictEqual(r.wieErwartet, true, "410 war genau der erwartete Status");
     assert.strictEqual(r.ok, true, "eine Probe mit erwartetem Fehlstatus darf nicht als Ausfall gezaehlt werden");
     assert.ok(/decommissioned/.test(r.bodySnippet), "die Begruendung bleibt trotzdem sichtbar");
-    console.log("Block 7/13 (erwarteter Fehlstatus zaehlt als bestanden): OK");
+    console.log("Block 7/15 (erwarteter Fehlstatus zaehlt als bestanden): OK");
   }
 
   // --- expectStatus: abweichender Status faellt auf ---
@@ -128,7 +128,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const r = await probe({ key: "v1", label: "v1 abgeschaltet", url: "https://example.invalid/v1", expectStatus: 410 });
     assert.strictEqual(r.wieErwartet, false, "wenn v1 ploetzlich wieder antwortet, muss das auffallen");
     assert.strictEqual(r.ok, false);
-    console.log("Block 8/13 (abweichender Status wird als Abweichung gemeldet): OK");
+    console.log("Block 8/15 (abweichender Status wird als Abweichung gemeldet): OK");
   }
 
   // --- FRED-Sammelproben: eine je Frequenzgruppe, erzeugt aus derselben
@@ -220,7 +220,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const body = JSON.parse(res.body);
     assert.strictEqual(body.proben.length, 2, "only=ucdp muss beide Monatsproben auswaehlen (laufender Monat + Vormonat)");
     assert.ok(body.proben.some((p) => p.key === "ucdp-monat-aktuell") && body.proben.some((p) => p.key === "ucdp-monat-vormonat"));
-    console.log("Block 10/13 (UCDP-Proben folgen dem aktuellen Datum und pruefen die Antwortform): OK");
+    console.log("Block 10/15 (UCDP-Proben folgen dem aktuellen Datum und pruefen die Antwortform): OK");
   }
 
   // --- GDELT-Timeline-Probe: erkennt eine date/value-Zeitreihe im Antwortkoerper ---
@@ -233,7 +233,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.ok(p.expect(JSON.stringify({ articles: [{ title: "x", url: "https://x" }] })),
       "eine Artikel-Antwort ohne date/value muss als fehlende Zeitreihe auffallen");
     assert.ok(p.expect("kein-json"), "kaputte Antwort muss ebenfalls eine Warnung ergeben");
-    console.log("Block 11/13 (GDELT-Timeline-Probe erkennt die Zeitreihe, faellt sonst auf): OK");
+    console.log("Block 11/15 (GDELT-Timeline-Probe erkennt die Zeitreihe, faellt sonst auf): OK");
   }
 
   // --- Der Fehler, den der Livebetrieb aufgedeckt hat: vier tote FRED-Proben
@@ -275,7 +275,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
       "die erreichbaren Quellen muessen als OK gemeldet werden, auch wenn andere haengen - im Livebetrieb stand hier faelschlich '0 OK'");
     assert.ok(body.zusammenfassung.ok.some((k) => k.startsWith("gdelt") || k === "yahoo" || k === "frankfurter"),
       "konkret: GDELT/Yahoo/Frankfurter duerfen nicht hinter toten FRED-Proben verschwinden");
-    console.log("Block 12/13 (tote Quellen verdecken die funktionierenden nicht mehr): OK");
+    console.log("Block 12/15 (tote Quellen verdecken die funktionierenden nicht mehr): OK");
   }
 
   // --- Trennschaerfe-Proben fuer die FRED-Ursache: erreichbar oder nicht? ---
@@ -299,7 +299,74 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
       "eine Antwort, die den fehlenden Schluessel benennt, ist das erwartete Ergebnis");
     assert.ok(api.expect("<html>irgendwas anderes</html>"),
       "eine voellig andere Antwortform muss auffallen");
-    console.log("Block 13/13 (Proben trennen 'FRED langsam' von 'FRED nicht erreichbar'): OK");
+    console.log("Block 13/15 (Proben trennen 'FRED langsam' von 'FRED nicht erreichbar'): OK");
+  }
+
+  // --- Die Frage, die keine einzelne Probe beantworten kann: KOMMT der
+  //     Schluessel ueberhaupt an? Ein 400 "api_key is not set" beantwortet sie
+  //     nicht - die zugehoerige Probe schickt bewusst keinen Schluessel. Ohne
+  //     diese Uebersicht laesst sich "Schluessel fehlt" nicht von "Schluessel
+  //     ist da, wird aber abgelehnt" unterscheiden: zwei verschiedene Probleme
+  //     mit zwei verschiedenen Loesungen. ---
+  {
+    global.fetch = async () => ({
+      ok: true, status: 200,
+      headers: { get: () => "application/json" },
+      text: async () => JSON.stringify({ observations: [{ date: "2026-08-01", value: "4.3" }] }),
+    });
+    delete process.env.FRED_API_KEY;
+    const diag = fresh();
+
+    const ohne = JSON.parse((await diag.handler({ httpMethod: "GET", queryStringParameters: { only: "fred-api" } })).body);
+    const kOhne = ohne.konfiguration.find((k) => k.name === "FRED_API_KEY");
+    assert.strictEqual(kOhne.gesetzt, false, "ohne Schluessel muss das auch so gemeldet werden");
+    assert.ok(/fredaccount\.stlouisfed\.org/.test(kOhne.hinweis || ""),
+      "und der Hinweis muss den Weg zum Schluessel nennen, nicht nur das Fehlen feststellen");
+    assert.ok(!ohne.proben.some((p) => p.key === "fred-api-mit-schluessel"),
+      "ohne Schluessel darf es die Schluesselprobe nicht geben - sie koennte nur rot sein und haette keinen Aussagewert");
+
+    const mit = JSON.parse((await diag.handler({
+      httpMethod: "GET",
+      headers: { "x-fred-key": "einsehrgeheimerschluessel" },
+      queryStringParameters: { only: "fred-api" },
+    })).body);
+    const kMit = mit.konfiguration.find((k) => k.name === "FRED_API_KEY");
+    assert.strictEqual(kMit.gesetzt, true);
+    assert.strictEqual(kMit.laenge, "einsehrgeheimerschluessel".length, "die Laenge hilft beim Erkennen eines abgeschnittenen Schluessels");
+    assert.ok(/Startbildschirm/.test(kMit.quelle), "es muss erkennbar sein, WOHER der wirksame Schluessel kommt");
+
+    const echteProbe = mit.proben.find((p) => p.key === "fred-api-mit-schluessel");
+    assert.ok(echteProbe, "mit Schluessel muss er auch wirklich getestet werden - gesetzt heisst nicht gueltig");
+    assert.ok(echteProbe.ok, "bei gueltiger Antwort muss die Probe gruen sein");
+
+    // Das Entscheidende: der Wert selbst darf NIRGENDS in der Antwort stehen.
+    const alles = JSON.stringify(mit);
+    assert.ok(!alles.includes("einsehrgeheimerschluessel"),
+      "der Schluessel darf in keinem Feld der Diagnose auftauchen - dieser Bericht wird im UI angezeigt");
+    console.log("Block 14/15 (Diagnose meldet, OB ein Schluessel wirkt, ohne ihn preiszugeben): OK");
+  }
+
+  // --- Zweite Verteidigungslinie: manche Anbieter spiegeln den gesendeten
+  //     Schluessel in ihrer Fehlermeldung zurueck ("invalid key: abc..."). Der
+  //     Auszug landet sonst unveraendert im UI. ---
+  {
+    const geheim = "zurueckgespiegelterschluessel";
+    global.fetch = async () => ({
+      ok: false, status: 401,
+      headers: { get: () => "application/json" },
+      text: async () => JSON.stringify({ error_message: "invalid api key: " + geheim }),
+    });
+    const diag = fresh();
+    const body = JSON.parse((await diag.handler({
+      httpMethod: "GET",
+      headers: { "x-fred-key": geheim },
+      queryStringParameters: { only: "fred-api-mit-schluessel" },
+    })).body);
+    const alles = JSON.stringify(body);
+    assert.ok(!alles.includes(geheim),
+      "ein vom Anbieter zurueckgespiegelter Schluessel muss herausgefiltert werden, bevor der Auszug im UI landet");
+    assert.ok(alles.includes("***"), "und die Stelle muss als redigiert erkennbar bleiben, statt spurlos zu verschwinden");
+    console.log("Block 15/15 (zurueckgespiegelte Schluessel werden aus dem Bericht entfernt): OK");
   }
 
   console.log("\nAlle diag.js-Tests erfolgreich.");

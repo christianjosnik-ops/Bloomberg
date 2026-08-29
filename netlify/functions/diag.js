@@ -15,10 +15,11 @@
 // Aufruf:  /.netlify/functions/diag           (alle Quellen)
 //          /.netlify/functions/diag?only=reliefweb
 //
-// Sicherheit: Es werden ausschliesslich oeffentliche, schluessellose Endpunkte
-// geprueft. Es werden KEINE Umgebungsvariablen, API-Schluessel, Cookies oder
-// Anfrage-Header ausgegeben - nur Statuszeilen und ein gekuerzter Auszug des
-// Antwortkoerpers.
+// Sicherheit: Es werden KEINE Schluesselwerte, Cookies oder Anfrage-Header
+// ausgegeben - nur Statuszeilen und ein gekuerzter Auszug des Antwortkoerpers.
+// Von konfigurierten Schluesseln wird ausschliesslich gemeldet, OB sie gesetzt
+// sind und wie lang sie sind; zusaetzlich filtert redigiere() jeden Wert aus
+// allen ausgehenden Texten heraus, falls ein Anbieter ihn je zurueckspiegelt.
 
 // Siehe ausfuehrlicher Kommentar in lib/providers.js: fred-csv UND gdelt
 // verstummten im Livebetrieb beide komplett (kein Status, keine Bytes) - das
@@ -30,7 +31,32 @@ require("dns").setDefaultResultOrder("ipv4first");
 // Gruppierung und Serienliste kommen aus fred.js selbst - nicht abgeschrieben.
 // Nur so kann die Diagnose nicht etwas anderes pruefen als das, was im Betrieb
 // laeuft. Das blosse Laden von fred.js loest keine Netzwerkaufrufe aus.
-const { SERIES_FREQ: FRED_SERIES_FREQ, gruppiereNachFrequenz: FRED_GRUPPIEREN } = require("./fred.js")._internal;
+const { SERIES_FREQ: FRED_SERIES_FREQ, gruppiereNachFrequenz: FRED_GRUPPIEREN, FRED_API_BASIS } = require("./fred.js")._internal;
+
+// Aus JEDEM ausgehenden Text die konfigurierten Geheimnisse entfernen.
+//
+// Der Normalfall ist, dass sie ohnehin nicht vorkommen - sie stehen in Headern,
+// nicht in URLs. Das hier ist die zweite Verteidigungslinie fuer den Fall, dass
+// ein Anbieter den gesendeten Schluessel in seiner Fehlermeldung zurueckspiegelt
+// ("invalid key: abc123..."). Dieser Auszug landet sonst unveraendert im UI.
+function redigiere(text, geheimnisse) {
+  if (typeof text !== "string" || !text) return text;
+  let out = text;
+  for (const g of geheimnisse) {
+    if (g && g.length >= 8) out = out.split(g).join("***");
+  }
+  return out;
+}
+
+// Kopfzeile unabhaengig von der Schreibweise lesen (Netlify liefert klein,
+// andere Laufzeiten nicht zwingend).
+function header(event, name) {
+  const h = (event && event.headers) || {};
+  for (const k of Object.keys(h)) {
+    if (k.toLowerCase() === name) return String(h[k] || "").trim();
+  }
+  return "";
+}
 
 const PROBE_TIMEOUT = 6000;
 const BODY_SNIPPET = 400;
@@ -53,6 +79,8 @@ const RW_FIELDS = "&fields[include][]=name&fields[include][]=date.created&fields
 // variable konfigurierbar, damit ein spaeter genehmigter Appname ohne
 // Redeploy eingetragen werden kann.
 const RELIEFWEB_APPNAME = process.env.RELIEFWEB_APPNAME || "terminal-app-geopolitics";
+const UCDP_TOKEN = process.env.UCDP_ACCESS_TOKEN || "";
+const FRED_ENV_KEY = process.env.FRED_API_KEY || "";
 const RELIEFWEB_BASE = "https://api.reliefweb.int/v2/disasters"
   + "?appname=" + encodeURIComponent(RELIEFWEB_APPNAME) + RW_FIELDS + "&sort[]=date.created:desc&limit=5";
 
@@ -153,7 +181,14 @@ const PROBES = [
         key: `ucdp-monat-${i === 0 ? "aktuell" : "vormonat"}`,
         label: `UCDP Candidate ${v} (${i === 0 ? "laufender Monat – 404 ist hier normal" : "Vormonat – hier sollten Daten kommen"})`,
         url: `https://ucdpapi.pcr.uu.se/api/gedevents/${v}?pagesize=5&page=0`,
-        headers: { "Accept": "application/json", "User-Agent": UA },
+        // Den Token mitschicken, falls konfiguriert. Ohne ihn antwortet UCDP
+        // garantiert mit 401 - eine Probe, die den Token NICHT sendet, koennte
+        // also nie etwas anderes melden als "401" und waere nach dem
+        // Hinterlegen des Tokens sofort irrefuehrend.
+        headers: Object.assign(
+          { "Accept": "application/json", "User-Agent": UA },
+          UCDP_TOKEN ? { "x-ucdp-access-token": UCDP_TOKEN } : {}
+        ),
         expect: (body) => {
           try {
             const j = JSON.parse(body);
@@ -242,6 +277,33 @@ const PROBES = [
   },
 ];
 
+// Die entscheidende Probe seit der Schluesselpflicht: funktioniert der
+// hinterlegte Schluessel WIRKLICH? Alles andere ist Vermutung - ein gesetzter
+// Schluessel kann trotzdem falsch abgetippt, widerrufen oder noch nicht
+// deployt sein, und keine der uebrigen Proben wuerde das je zeigen.
+//
+// Nur vorhanden, wenn ein Schluessel existiert; sonst haette sie keinen
+// Aussagewert und faerbte den Bericht bloss rot.
+function schluesselProbe(schluessel, woher) {
+  if (!schluessel) return [];
+  return [{
+    key: "fred-api-mit-schluessel",
+    label: `FRED offizielle API MIT Schluessel (${woher}) – hier muss HTTP 200 stehen`,
+    url: `${FRED_API_BASIS}?series_id=UNRATE&file_type=json&observation_start=2024-01-01`,
+    // Bearer-Header, exakt wie fred.js im Betrieb. NICHT als api_key in der
+    // URL: die URL steht im Diagnosebericht, der Header nicht.
+    headers: { "Accept": "application/json", "User-Agent": UA, "Authorization": "Bearer " + schluessel },
+    expect: (body) => {
+      try {
+        const j = JSON.parse(body);
+        const obs = j && Array.isArray(j.observations) ? j.observations : null;
+        if (!obs) return "kein observations-Array – Antwortform hat sich geaendert?";
+        return obs.length ? null : "observations-Array ist leer";
+      } catch (e) { return "Antwort ist kein gueltiges JSON: " + String(e && e.message || e); }
+    },
+  }];
+}
+
 async function probe(p) {
   const t0 = Date.now();
   const ctrl = new AbortController();
@@ -294,12 +356,22 @@ async function probe(p) {
 }
 
 exports.handler = async (event) => {
-  const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type", "Content-Type": "application/json" };
+  const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type, X-FRED-Key", "Content-Type": "application/json" };
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: cors, body: "" };
+
+  // Derselbe Vorrang wie in fred.js: Browser-Header schlaegt Umgebungsvariable.
+  // Waere er hier anders, pruefte die Diagnose etwas anderes als das, was im
+  // Betrieb passiert - genau der Fehler, der schon einmal zu einer
+  // Fehldiagnose gefuehrt hat.
+  const fredHeaderKey = header(event, "x-fred-key");
+  const fredKey = fredHeaderKey || FRED_ENV_KEY;
+  const fredWoher = fredHeaderKey ? "aus dem Startbildschirm" : "aus FRED_API_KEY";
+  const geheimnisse = [fredKey, FRED_ENV_KEY, UCDP_TOKEN].filter(Boolean);
 
   const qp = (event && event.queryStringParameters) || {};
   const only = (qp.only || "").trim().toLowerCase();
-  const list = only ? PROBES.filter((p) => p.key.includes(only)) : PROBES;
+  const alle = [...PROBES, ...schluesselProbe(fredKey, fredWoher)];
+  const list = only ? alle.filter((p) => p.key.includes(only)) : alle;
 
   // PARALLEL, nicht nacheinander.
   //
@@ -316,7 +388,17 @@ exports.handler = async (event) => {
   // liefert immer ein vollstaendiges Bild. Genau das ist der Zweck einer
   // Diagnose: eine tote Quelle darf die Aussage ueber die anderen nicht
   // verhindern.
-  const results = await Promise.all(list.map((p) => probe(p)));
+  const roh = await Promise.all(list.map((p) => probe(p)));
+  // Zweite Verteidigungslinie: falls ein Anbieter den gesendeten Schluessel in
+  // seiner Fehlermeldung zurueckspiegelt, wird er hier entfernt, bevor der
+  // Auszug im UI landet.
+  const results = roh.map((r) => Object.assign({}, r, {
+    bodySnippet: redigiere(r.bodySnippet, geheimnisse),
+    error: redigiere(r.error, geheimnisse),
+    errorCause: redigiere(r.errorCause, geheimnisse),
+    warning: redigiere(r.warning, geheimnisse),
+    url: redigiere(r.url, geheimnisse),
+  }));
 
   const summary = {
     ok: results.filter((r) => r.ok).map((r) => r.key),
@@ -334,10 +416,46 @@ exports.handler = async (event) => {
         fetchGlobalVorhanden: typeof fetch === "function",
         region: process.env.AWS_REGION || null,
       },
+      // Beantwortet die Frage, die keine einzelne Probe beantworten kann:
+      // KOMMT der Schluessel ueberhaupt an? Ein 400 "api_key is not set" sagt
+      // das nicht - die entsprechende Probe schickt bewusst keinen Schluessel.
+      // Ausgegeben wird ausschliesslich OB und WIE LANG, nie der Wert.
+      konfiguration: [
+        {
+          name: "FRED_API_KEY",
+          zweck: "F4 MAKRO – US- und Euro-Konjunkturdaten",
+          gesetzt: !!fredKey,
+          quelle: fredKey ? fredWoher : null,
+          laenge: fredKey ? fredKey.length : 0,
+          hinweis: fredKey
+            ? "Ob er GUELTIG ist, zeigt die Probe „FRED offizielle API MIT Schluessel“."
+            : "Ohne Schluessel liefert FRED seit November 2025 nichts. Gratis unter https://fredaccount.stlouisfed.org/apikey – dann im Startbildschirm eintragen oder als FRED_API_KEY hinterlegen.",
+        },
+        {
+          name: "UCDP_ACCESS_TOKEN",
+          zweck: "F6 WELTLAGE – dynamische Liste aktiver Konfliktlaender",
+          gesetzt: !!UCDP_TOKEN,
+          quelle: UCDP_TOKEN ? "aus UCDP_ACCESS_TOKEN" : null,
+          laenge: UCDP_TOKEN ? UCDP_TOKEN.length : 0,
+          hinweis: UCDP_TOKEN
+            ? null
+            : "Optional. Ohne Token laeuft F6 auf der kuratierten 20-Laender-Liste. Token gratis per Mail an mertcan.yilmaz@pcr.uu.se.",
+        },
+        {
+          name: "RELIEFWEB_APPNAME",
+          zweck: "F6 WELTLAGE – zusaetzliche Krisenmeldungen (UN OCHA)",
+          gesetzt: !!process.env.RELIEFWEB_APPNAME,
+          quelle: process.env.RELIEFWEB_APPNAME ? "aus RELIEFWEB_APPNAME" : null,
+          laenge: (process.env.RELIEFWEB_APPNAME || "").length,
+          hinweis: process.env.RELIEFWEB_APPNAME
+            ? null
+            : "Optional. ReliefWeb v2 verlangt einen vorab registrierten Appnamen; ohne den wird die Quelle uebersprungen.",
+        },
+      ],
       zusammenfassung: summary,
       proben: results,
     }, null, 2),
   };
 };
 
-exports._internal = { PROBES, probe };
+exports._internal = { PROBES, probe, redigiere, header, schluesselProbe };

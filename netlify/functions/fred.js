@@ -182,7 +182,37 @@ const BROWSER_HEADERS = {
 // (anders als bei UCDP, wo man eine Mail schreiben muss):
 //   https://fredaccount.stlouisfed.org/apikey
 const FRED_API_KEY = process.env.FRED_API_KEY || "";
-const FRED_KEY_HINWEIS = "FRED verlangt seit November 2025 einen API-Schluessel; kostenlos unter https://fredaccount.stlouisfed.org/apikey, dann als FRED_API_KEY hinterlegen";
+const FRED_KEY_HINWEIS = "FRED verlangt seit November 2025 einen API-Schluessel; kostenlos unter https://fredaccount.stlouisfed.org/apikey – dann entweder im Startbildschirm eintragen oder als FRED_API_KEY hinterlegen";
+
+// Zwei Wege, denselben Schluessel zu setzen - bewusst beide:
+//
+//   1. Umgebungsvariable FRED_API_KEY. Gilt fuer jeden Besucher, ueberlebt
+//      einen frischen Browser und verlaesst den Server nie. Das ist der
+//      Standard.
+//   2. Header X-FRED-Key aus dem Browser (Startbildschirm, wie der
+//      Finnhub-Key). Wirkt sofort ohne Redeploy und ueberschreibt Weg 1.
+//
+// Warum Header und nicht Anfrageparameter: eine URL landet in Netlifys
+// Zugriffsprotokoll, im Browserverlauf und im Referrer. Ein Header tut das
+// nicht. Derselbe Grund, aus dem der Schluessel weiter unten auch Richtung
+// FRED per Authorization-Header geht statt in der Query.
+//
+// Der Wert wird bewusst NUR gelesen und weitergereicht, nie geloggt und nie in
+// eine Fehlermeldung uebernommen (dafuer gibt es einen eigenen Test).
+const FRED_KEY_HEADER = "x-fred-key";
+function schluesselAus(event) {
+  const h = (event && event.headers) || {};
+  // Netlify liefert Header klein geschrieben; andere Laufzeiten nicht
+  // zwingend. Deshalb unabhaengig von der Schreibweise suchen, statt sich auf
+  // eine Konvention zu verlassen.
+  for (const k of Object.keys(h)) {
+    if (k.toLowerCase() === FRED_KEY_HEADER) {
+      const v = String(h[k] || "").trim();
+      if (v) return v;
+    }
+  }
+  return FRED_API_KEY;
+}
 
 // Der Schluessel wandert in den Authorization-Header, nicht in die URL: so
 // landet er nicht in Server-Logs, Fehlermeldungen oder Referrern. Die aeltere
@@ -191,15 +221,16 @@ const FRED_KEY_HINWEIS = "FRED verlangt seit November 2025 einen API-Schluessel;
 // Wissen, dass der Schluessel in der URL steht.
 const FRED_API_BASIS = "https://api.stlouisfed.org/fred/series/observations";
 
-async function fredApiEineSerie(id, von, timeoutMs, now) {
+async function fredApiEineSerie(id, von, timeoutMs, now, key) {
+  const schluessel = key || FRED_API_KEY;
   const basis = `${FRED_API_BASIS}?series_id=${encodeURIComponent(id)}&file_type=json&observation_start=${von}`;
   const kopf = { "Accept": "application/json", "User-Agent": BROWSER_HEADERS["User-Agent"] };
 
   const versuche = [
-    { url: basis, headers: { ...kopf, "Authorization": "Bearer " + FRED_API_KEY }, wie: "Authorization-Header" },
+    { url: basis, headers: { ...kopf, "Authorization": "Bearer " + schluessel }, wie: "Authorization-Header" },
     // Nur falls der Header abgelehnt wird. Die URL wird NIE in eine Meldung
     // uebernommen, sonst stuende der Schluessel im Fehlertext.
-    { url: basis + "&api_key=" + encodeURIComponent(FRED_API_KEY), headers: kopf, wie: "api_key-Parameter" },
+    { url: basis + "&api_key=" + encodeURIComponent(schluessel), headers: kopf, wie: "api_key-Parameter" },
   ];
 
   let letzterFehler = null;
@@ -238,10 +269,10 @@ async function fredApiEineSerie(id, von, timeoutMs, now) {
 // schlanke JSON-Abrufe ohne die Diagrammberechnung von fredgraph. Und weil jede
 // Serie einzeln kommt, gibt es keine gemeinsame Zeitachse und damit auch kein
 // Aggregationsrisiko - die Frequenzgruppierung entfaellt auf diesem Weg.
-async function fromFredApi(ids, timeoutMs, now) {
+async function fromFredApi(ids, timeoutMs, now, key) {
   const cosd = new Date(); cosd.setFullYear(cosd.getFullYear() - BATCH_YEARS);
   const von = cosd.toISOString().slice(0, 10);
-  const ergebnisse = await Promise.allSettled(ids.map((id) => fredApiEineSerie(id, von, timeoutMs, now)));
+  const ergebnisse = await Promise.allSettled(ids.map((id) => fredApiEineSerie(id, von, timeoutMs, now, key)));
   const out = {};
   const fehler = [];
   ergebnisse.forEach((r, i) => {
@@ -379,8 +410,15 @@ async function fetchOne(id, yearsIn, deadline) {
 }
 
 exports.handler = async (event) => {
-  const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type", "Content-Type": "application/json" };
+  // X-FRED-Key muss ausdruecklich erlaubt sein, sonst blockt der Browser die
+  // Anfrage per Preflight, sobald die Seite und die Function nicht exakt
+  // dieselbe Herkunft haben (Netlify-Vorschau-Deploys, eigene Domain).
+  const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type, X-FRED-Key", "Content-Type": "application/json" };
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: cors, body: "" };
+
+  // Vom Browser gereichter Schluessel schlaegt die Umgebungsvariable; ohne
+  // beides bleibt der Wert leer und der schluessellose Weg wird versucht.
+  const schluessel = schluesselAus(event);
 
   const qp = event.queryStringParameters || {};
   const isBatch = !!qp.ids;
@@ -426,9 +464,9 @@ exports.handler = async (event) => {
       // Frequenzgruppierung: jede Serie kommt einzeln und unveraendert, es gibt
       // also gar keine gemeinsame Zeitachse, auf der etwas aggregiert werden
       // koennte.
-      if (FRED_API_KEY) {
+      if (schluessel) {
         try {
-          const daten = await fromFredApi(stillMissing, budget);
+          const daten = await fromFredApi(stillMissing, budget, undefined, schluessel);
           for (const id of Object.keys(daten)) {
             const years = Math.min(50, Math.max(1, parseInt(qp.years || DEFAULT_YEARS[id] || 10, 10) || 10));
             const data = Object.assign({}, daten[id], { source: "fred-api" });
@@ -443,11 +481,19 @@ exports.handler = async (event) => {
       }
 
       // fredgraph.csv ist seit der Schluesselpflicht (November 2025) ein
-      // Altlast-Weg: Es kostet nichts, ihn zu versuchen - er koennte aus
-      // manchen Netzen noch durchkommen -, aber er ist nicht mehr die
-      // Erwartung. Ohne Schluessel bleibt er der einzige Versuch, und dann
+      // Altlast-Weg. Ohne Schluessel bleibt er der einzige Versuch, und dann
       // MUSS die Meldung sagen, was wirklich fehlt.
-      const nochOffen = stillMissing.filter((id) => !cachedHits[id]);
+      //
+      // MIT Schluessel wird er dagegen gar nicht mehr angefasst. Frueher hiess
+      // es hier "es kostet nichts, ihn zu versuchen" - das stimmt nicht: jede
+      // Frequenzgruppe laeuft in ihren vollen Timeout, und der geht vom selben
+      // Budget ab, aus dem danach die Einzelabrufe bezahlt werden. Scheitert
+      // die API also bei zwei von vierzehn Serien, verbrannten bis zu vier
+      // tote Gruppenabrufe das Restbudget und machten aus einem TEILERFOLG
+      // eine Zeitueberschreitung fuer die ganze Antwort. Ein Weg, der belegt
+      // nicht mehr antwortet, darf einem Weg, der antwortet, keine Zeit
+      // wegnehmen.
+      const nochOffen = schluessel ? [] : stillMissing.filter((id) => !cachedHits[id]);
       const gruppen = nochOffen.length ? [...gruppiereNachFrequenz(nochOffen).entries()] : [];
       const ergebnisse = await Promise.allSettled(
         gruppen.map(([, gruppenIds]) => fromFredCsvBatch(gruppenIds, budget))
@@ -481,7 +527,18 @@ exports.handler = async (event) => {
     // in Wellen und weiterhin gegen dasselbe Gesamt-Zeitbudget. Der Grund des
     // Sammel-Fehlschlags wird angehaengt, damit im UI nicht nur der Einzelfehler
     // steht, sondern auch warum der Hauptweg nicht griff.
+    // Aus demselben Grund wie oben: die Einzelabrufe gehen ueber fredgraph.csv,
+    // also ueber genau den Weg, der mit Schluessel nicht mehr benutzt wird.
+    // Mit Schluessel haben diese Serien es bereits ueber die API versucht und
+    // nicht geschafft - sie nochmal ueber eine tote Strasse zu schicken bringt
+    // keine Daten, sondern nur Wartezeit. Stattdessen sofort der echte Grund.
     const CONCURRENCY = 3;
+    if (schluessel && remaining.length) {
+      for (const id of remaining) {
+        results.push([id, { id, error: "FRED-API lieferte diese Serie nicht" + (batchError ? " – " + batchError : "") }]);
+      }
+      remaining.length = 0;
+    }
     for (let i = 0; i < remaining.length; i += CONCURRENCY) {
       if (timeLeft(deadline) < MIN_ATTEMPT_MS) {
         for (const id of remaining.slice(i)) {
@@ -507,7 +564,7 @@ exports.handler = async (event) => {
     // "Zeitueberschreitung" stehen - das klingt nach einem voruebergehenden
     // Problem, obwohl es ein dauerhaftes ist, das der Nutzer in zwei Minuten
     // selbst beheben kann.
-    if (!FRED_API_KEY) {
+    if (!schluessel) {
       for (const id of Object.keys(out)) {
         if (out[id] && out[id].error) out[id].error += " | " + FRED_KEY_HINWEIS;
       }
@@ -525,4 +582,4 @@ exports.handler = async (event) => {
 };
 
 // Fuer Tests: Einzelfunktionen ohne HTTP-Handler-Wrapper zugaenglich machen.
-exports._internal = { fetchOne, fromFredCsv, fromFredCsvBatch, fromFredApi, FRED_KEY_HINWEIS, shapeSeries, gruppiereNachFrequenz, freqOf, SERIES_FREQ, markiereAktualitaet, MAX_AGE_DAYS, MAX_AGE_FALLBACK_DAYS, FUNCTION_BUDGET_MS, MIN_ATTEMPT_MS, BATCH_YEARS };
+exports._internal = { fetchOne, fromFredCsv, fromFredCsvBatch, fromFredApi, FRED_KEY_HINWEIS, FRED_API_BASIS, shapeSeries, gruppiereNachFrequenz, freqOf, SERIES_FREQ, markiereAktualitaet, MAX_AGE_DAYS, MAX_AGE_FALLBACK_DAYS, FUNCTION_BUDGET_MS, MIN_ATTEMPT_MS, BATCH_YEARS };
