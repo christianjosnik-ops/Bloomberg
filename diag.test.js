@@ -289,8 +289,16 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const api = PROBES.find((p) => p.key === "fred-api-erreichbarkeit");
     assert.ok(api && api.url.includes("api.stlouisfed.org"),
       "die offizielle API liegt auf einer anderen Subdomain und kann anders erreichbar sein");
-    assert.strictEqual(api.expectStatus, 400,
-      "ohne Schluessel antwortet sie mit 400 - ein SCHNELLER Fehler beweist Erreichbarkeit und macht den Weg ueber einen Schluessel zur Loesung");
+    // Bewusst KEIN erwarteter Statuscode: ob FRED ohne Schluessel 400 oder 401
+    // liefert, ist nicht sicher belegt, und ein falsch erwarteter Code faerbte
+    // die Probe faelschlich rot. Entscheidend ist, DASS schnell geantwortet
+    // wird - der Inhalt wird geprueft, nicht die Zahl.
+    assert.strictEqual(api.expectStatus, undefined,
+      "die Probe darf sich nicht auf einen unbelegten Statuscode festlegen");
+    assert.strictEqual(api.expect('{"error_message":"Bad Request. The value for variable api_key is not registered."}'), null,
+      "eine Antwort, die den fehlenden Schluessel benennt, ist das erwartete Ergebnis");
+    assert.ok(api.expect("<html>irgendwas anderes</html>"),
+      "eine voellig andere Antwortform muss auffallen");
     console.log("Block 13/13 (Proben trennen 'FRED langsam' von 'FRED nicht erreichbar'): OK");
   }
 

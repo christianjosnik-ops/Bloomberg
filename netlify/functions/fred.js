@@ -5,19 +5,23 @@
 // Eurostat-/EZB-Reihen unter regulaeren FRED-IDs mit (z.B. ECBDFR fuer den
 // EZB-Einlagensatz), dieselbe Pipeline bedient also beide Regionen.
 //
-// ZWEI WEGE zu FRED, in dieser Reihenfolge:
-//   1. Offizielle API (api.stlouisfed.org) - nur wenn FRED_API_KEY gesetzt ist.
-//      Kostenloser Schluessel mit Sofortregistrierung.
-//   2. fredgraph.csv - der Download der Weboberflaeche, ohne Schluessel.
+// EIN SCHLUESSEL IST NOETIG. FRED hat im November 2025 die API v2 eingefuehrt
+// und gleichzeitig die Schluesselpflicht auf dem alten Endpunkt durchgesetzt.
+// Schluessellose Abrufe ueber die Weboberflaeche (fredgraph.csv) - jahrelang
+// der uebliche Weg - sind damit beendet.
 //
-// Warum ueberhaupt zwei: Im Livebetrieb lief JEDE Anfrage an
-// fred.stlouisfed.org in einen Timeout - auch die winzige Einzelserie mit nur
-// zwei Jahren Zeitraum. Kein 403, keine Fehlerseite, schlicht keine Antwort.
-// fredgraph ist eben die Download-Funktion der Weboberflaeche und nicht als
-// Schnittstelle gedacht. Die offizielle API liegt auf einer anderen Subdomain,
-// ist als Schnittstelle ausgelegt und liefert schlankes JSON statt einer
-// Diagrammberechnung. Die Diagnose-Proben "fred-erreichbarkeit" und
-// "fred-api-erreichbarkeit" zeigen, welcher Weg auf der echten Instanz traegt.
+// Das erklaert den Live-Befund rueckwirkend: JEDE fredgraph-Anfrage lief in
+// einen Timeout, auch die winzige Einzelserie ueber zwei Jahre. Es war nie ein
+// Format-, Serien- oder Frequenzproblem; die Tuer ist zu. Ein sauberer 401
+// waere freundlicher gewesen, aendert aber nichts.
+//
+// Reihenfolge:
+//   1. Offizielle API (api.stlouisfed.org), sobald FRED_API_KEY gesetzt ist.
+//      Schluessel kostenlos und sofort: https://fredaccount.stlouisfed.org/apikey
+//   2. fredgraph.csv als Altlast-Rueckfall - er koennte aus manchen Netzen noch
+//      durchkommen, ist aber nicht mehr die Erwartung. Scheitert er ohne
+//      Schluessel, nennt die Fehlermeldung den Grund und den Weg zum Schluessel,
+//      statt nur "Zeitueberschreitung" zu melden.
 //
 // FRUEHER gab es hier zusaetzlich DBnomics als Rueckfallebene. Per Live-
 // Diagnose auf der echten Instanz nachweislich tot: beide Pfadformen
@@ -161,53 +165,87 @@ const BROWSER_HEADERS = {
   "Referer": "https://fred.stlouisfed.org/",
 };
 
-// --- Offizielle FRED-API als bevorzugter Weg, wenn ein Schluessel vorliegt ---
+// --- Offizielle FRED-API: seit November 2025 der EINZIGE tragfaehige Weg -----
 //
-// Anlass: Im Livebetrieb lief JEDE Anfrage an fred.stlouisfed.org in einen
-// Timeout - auch die winzige Einzelserie. Kein 403, keine Fehlerseite, schlicht
-// keine Antwort. Der fredgraph-Endpunkt ist eben die Download-Funktion der
-// Weboberflaeche und nicht als Schnittstelle gedacht; er kann langsam sein oder
-// Anfragen aus Rechenzentren abweisen.
+// Belegte Vorgeschichte: FRED hat die API v1 2012 mit optionalem Schluessel
+// gestartet. Schluessellose Abrufe ueber die Weboberflaeche (fredgraph.csv)
+// funktionierten jahrelang mit, weshalb kaum jemand migrierte. Im November 2025
+// hat FRED die v2 eingefuehrt und gleichzeitig die Schluesselpflicht auf dem
+// alten Endpunkt durchgesetzt - schluessellose Zugriffe sind damit beendet.
 //
-// Die offizielle API liegt auf einer anderen Subdomain (api.stlouisfed.org),
-// ist als Schnittstelle ausgelegt und dokumentiert - sie braucht aber einen
-// kostenlosen Schluessel (Sofortregistrierung, anders als bei UCDP). Ist
-// FRED_API_KEY gesetzt, laeuft alles darueber; sonst bleibt es beim bisherigen
-// Weg. Die Diagnose-Probe "fred-api-erreichbarkeit" zeigt, ob diese Subdomain
-// ueberhaupt antwortet.
+// Genau das erklaert den Live-Befund: JEDE fredgraph-Anfrage lief in einen
+// Timeout, auch die winzige Einzelserie. Es war nie ein Format- oder
+// Serienproblem; die Tuer ist zu. Ein sauberer 401 waere freundlicher gewesen,
+// aber am Ergebnis aendert das nichts.
+//
+// Der Schluessel ist kostenlos und sofort per Online-Registrierung zu bekommen
+// (anders als bei UCDP, wo man eine Mail schreiben muss):
+//   https://fredaccount.stlouisfed.org/apikey
 const FRED_API_KEY = process.env.FRED_API_KEY || "";
+const FRED_KEY_HINWEIS = "FRED verlangt seit November 2025 einen API-Schluessel; kostenlos unter https://fredaccount.stlouisfed.org/apikey, dann als FRED_API_KEY hinterlegen";
 
-// Holt mehrere Serien ueber die offizielle API. Sie kennt keinen Sammelabruf,
+// Der Schluessel wandert in den Authorization-Header, nicht in die URL: so
+// landet er nicht in Server-Logs, Fehlermeldungen oder Referrern. Die aeltere
+// Form mit api_key-Parameter bleibt als Rueckfall fuer den Fall, dass ein
+// Endpunkt den Header noch nicht auswertet - dann aber ausdruecklich mit dem
+// Wissen, dass der Schluessel in der URL steht.
+const FRED_API_BASIS = "https://api.stlouisfed.org/fred/series/observations";
+
+async function fredApiEineSerie(id, von, timeoutMs, now) {
+  const basis = `${FRED_API_BASIS}?series_id=${encodeURIComponent(id)}&file_type=json&observation_start=${von}`;
+  const kopf = { "Accept": "application/json", "User-Agent": BROWSER_HEADERS["User-Agent"] };
+
+  const versuche = [
+    { url: basis, headers: { ...kopf, "Authorization": "Bearer " + FRED_API_KEY }, wie: "Authorization-Header" },
+    // Nur falls der Header abgelehnt wird. Die URL wird NIE in eine Meldung
+    // uebernommen, sonst stuende der Schluessel im Fehlertext.
+    { url: basis + "&api_key=" + encodeURIComponent(FRED_API_KEY), headers: kopf, wie: "api_key-Parameter" },
+  ];
+
+  let letzterFehler = null;
+  for (const v of versuche) {
+    let res;
+    try {
+      res = await fetchWithTimeout(v.url, { headers: v.headers }, timeoutMs);
+    } catch (e) {
+      // Netzwerkfehler/Timeout gelten fuer beide Formen gleich - nicht nachfassen.
+      throw new Error(`FRED-API (${v.wie}): ${String((e && e.message) || e)}`);
+    }
+    if (res.ok) {
+      const json = await res.json();
+      const obs = Array.isArray(json && json.observations) ? json.observations : null;
+      if (!obs) throw new Error("FRED-API: kein observations-Array in der Antwort");
+      const rows = [];
+      for (const o of obs) {
+        // Fehlende Werte schreibt auch die API als "." - parseFloat ergibt NaN.
+        const v2 = parseFloat(o && o.value);
+        if (o && o.date && !isNaN(v2)) rows.push({ t: String(o.date), v: v2 });
+      }
+      return shapeSeries(id, rows, now);
+    }
+    let detail = "";
+    try { detail = (await res.text()).slice(0, 150).replace(/\s+/g, " ").trim(); } catch (_) {}
+    letzterFehler = new Error(`FRED-API HTTP ${res.status} (${v.wie})${detail ? " – " + detail : ""}`);
+    // Nur bei Authentifizierungsproblemen lohnt die zweite Form; bei allem
+    // anderen (404, 5xx) wuerde sie denselben Fehler nochmal kosten.
+    if (![400, 401, 403].includes(res.status)) break;
+  }
+  throw letzterFehler || new Error("FRED-API: kein Ergebnis");
+}
+
+// Holt mehrere Serien. Die API kennt keinen Sammelabruf fuer beliebige Serien,
 // also eine Anfrage je Serie - dafuer parallel, was hier unproblematisch ist:
-// es sind schlanke JSON-Abrufe ohne die Diagrammberechnung von fredgraph.
+// schlanke JSON-Abrufe ohne die Diagrammberechnung von fredgraph. Und weil jede
+// Serie einzeln kommt, gibt es keine gemeinsame Zeitachse und damit auch kein
+// Aggregationsrisiko - die Frequenzgruppierung entfaellt auf diesem Weg.
 async function fromFredApi(ids, timeoutMs, now) {
   const cosd = new Date(); cosd.setFullYear(cosd.getFullYear() - BATCH_YEARS);
   const von = cosd.toISOString().slice(0, 10);
-  const ergebnisse = await Promise.allSettled(ids.map(async (id) => {
-    const url = "https://api.stlouisfed.org/fred/series/observations"
-      + `?series_id=${encodeURIComponent(id)}&api_key=${encodeURIComponent(FRED_API_KEY)}`
-      + `&file_type=json&observation_start=${von}`;
-    const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": BROWSER_HEADERS["User-Agent"] } }, timeoutMs);
-    if (!res.ok) {
-      let detail = "";
-      try { detail = (await res.text()).slice(0, 150).replace(/\s+/g, " ").trim(); } catch (_) {}
-      throw new Error(`FRED-API HTTP ${res.status}${detail ? " – " + detail : ""}`);
-    }
-    const json = await res.json();
-    const obs = Array.isArray(json && json.observations) ? json.observations : null;
-    if (!obs) throw new Error("FRED-API: kein observations-Array in der Antwort");
-    const rows = [];
-    for (const o of obs) {
-      // Fehlende Werte schreibt auch die API als "." - parseFloat ergibt NaN.
-      const v = parseFloat(o && o.value);
-      if (o && o.date && !isNaN(v)) rows.push({ t: String(o.date), v });
-    }
-    return [id, shapeSeries(id, rows, now)];
-  }));
+  const ergebnisse = await Promise.allSettled(ids.map((id) => fredApiEineSerie(id, von, timeoutMs, now)));
   const out = {};
   const fehler = [];
   ergebnisse.forEach((r, i) => {
-    if (r.status === "fulfilled" && r.value[1]) out[r.value[0]] = r.value[1];
+    if (r.status === "fulfilled" && r.value) out[ids[i]] = r.value;
     else if (r.status === "rejected") fehler.push(`${ids[i]}: ${String((r.reason && r.reason.message) || r.reason)}`);
   });
   if (!Object.keys(out).length) throw new Error("FRED-API lieferte keine Serie" + (fehler.length ? " – " + fehler.join(" | ") : ""));
@@ -404,6 +442,11 @@ exports.handler = async (event) => {
         }
       }
 
+      // fredgraph.csv ist seit der Schluesselpflicht (November 2025) ein
+      // Altlast-Weg: Es kostet nichts, ihn zu versuchen - er koennte aus
+      // manchen Netzen noch durchkommen -, aber er ist nicht mehr die
+      // Erwartung. Ohne Schluessel bleibt er der einzige Versuch, und dann
+      // MUSS die Meldung sagen, was wirklich fehlt.
       const nochOffen = stillMissing.filter((id) => !cachedHits[id]);
       const gruppen = nochOffen.length ? [...gruppiereNachFrequenz(nochOffen).entries()] : [];
       const ergebnisse = await Promise.allSettled(
@@ -459,6 +502,16 @@ exports.handler = async (event) => {
         if (out[id] && out[id].error) out[id].error += " | Sammelabruf: " + batchError;
       }
     }
+    // Ohne Schluessel ist ein Fehlschlag seit der Schluesselpflicht der
+    // Normalfall, nicht die Ausnahme. Dann darf im UI nicht bloss
+    // "Zeitueberschreitung" stehen - das klingt nach einem voruebergehenden
+    // Problem, obwohl es ein dauerhaftes ist, das der Nutzer in zwei Minuten
+    // selbst beheben kann.
+    if (!FRED_API_KEY) {
+      for (const id of Object.keys(out)) {
+        if (out[id] && out[id].error) out[id].error += " | " + FRED_KEY_HINWEIS;
+      }
+    }
     // Abgeschnittene IDs bekommen einen eigenen, sprechenden Eintrag, statt
     // wortlos zu fehlen.
     for (const id of abgeschnitten) {
@@ -472,4 +525,4 @@ exports.handler = async (event) => {
 };
 
 // Fuer Tests: Einzelfunktionen ohne HTTP-Handler-Wrapper zugaenglich machen.
-exports._internal = { fetchOne, fromFredCsv, fromFredCsvBatch, fromFredApi, shapeSeries, gruppiereNachFrequenz, freqOf, SERIES_FREQ, markiereAktualitaet, MAX_AGE_DAYS, MAX_AGE_FALLBACK_DAYS, FUNCTION_BUDGET_MS, MIN_ATTEMPT_MS, BATCH_YEARS };
+exports._internal = { fetchOne, fromFredCsv, fromFredCsvBatch, fromFredApi, FRED_KEY_HINWEIS, shapeSeries, gruppiereNachFrequenz, freqOf, SERIES_FREQ, markiereAktualitaet, MAX_AGE_DAYS, MAX_AGE_FALLBACK_DAYS, FUNCTION_BUDGET_MS, MIN_ATTEMPT_MS, BATCH_YEARS };

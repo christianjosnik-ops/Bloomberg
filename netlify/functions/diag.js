@@ -78,13 +78,24 @@ const PROBES = [
   {
     // Die offizielle FRED-API liegt auf einer ANDEREN Subdomain und damit
     // moeglicherweise hinter anderer Infrastruktur. Ohne Schluessel antwortet
-    // sie mit einem Fehler - aber ein SCHNELLER Fehler beweist Erreichbarkeit
-    // und macht den Weg ueber einen (kostenlosen) API-Schluessel zur Loesung.
+    // sie mit einem Fehler - aber ein SCHNELLER Fehler beweist Erreichbarkeit.
+    // Genau das ist die entscheidende Information: seit FRED im November 2025
+    // die Schluesselpflicht durchgesetzt hat, fuehrt der Weg ohnehin nur noch
+    // ueber einen Schluessel. Antwortet diese Probe zuegig, ist F4 MAKRO
+    // eine Registrierung entfernt - laeuft auch sie ins Timeout, ist der
+    // gesamte Anbieter aus dieser Region nicht erreichbar.
+    //
+    // Kein expectStatus: welchen Code FRED ohne Schluessel genau liefert (400
+    // oder 401), ist nicht sicher belegt - und ein falsch erwarteter Code
+    // wuerde die Probe faelschlich rot faerben. Wichtig ist allein, DASS
+    // schnell geantwortet wird; expect() prueft deshalb den Inhalt.
     key: "fred-api-erreichbarkeit",
-    label: "FRED offizielle API (api.stlouisfed.org) – erwartet HTTP 400 ohne Schluessel",
+    label: "FRED offizielle API (api.stlouisfed.org) – ohne Schluessel; Fehler ist hier normal, Hauptsache schnell",
     url: "https://api.stlouisfed.org/fred/series/observations?series_id=UNRATE&file_type=json",
     headers: { "Accept": "application/json", "User-Agent": UA },
-    expectStatus: 400,
+    expect: (body) => (/api[_ ]?key/i.test(body)
+      ? null
+      : "Antwort erwaehnt keinen fehlenden Schluessel – unerwartete Form: " + body.slice(0, 120).replace(/\s+/g, " ")),
   },
   {
     key: "fred-csv",
