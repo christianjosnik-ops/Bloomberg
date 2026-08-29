@@ -768,9 +768,17 @@ function MacroGroup({ title, presets, macro, macroBusy }) {
               {d?.error && <div style={{ color: C.red, fontSize: "var(--fs-xs)" }}>Fehler: {d.error}</div>}
               {d && !d.error && (<>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 6 }}>
-                  <span style={{ fontSize: "var(--fs-xl)", fontWeight: 700, color: C.white }}>{d.latest ?? "—"} <span className="muted" style={{ fontWeight: 400 }}>{m.unit}</span></span>
+                  {/* Bei einer ueberfaelligen Serie stimmt der Wert zwar, ist aber
+                      Monate bis Jahre alt. Er wird deshalb gedaempft dargestellt,
+                      damit er nicht wie ein frischer Kurs wirkt. */}
+                  <span style={{ fontSize: "var(--fs-xl)", fontWeight: 700, color: d.outdated ? C.muted : C.white }}>{d.latest ?? "—"} <span className="muted" style={{ fontWeight: 400 }}>{m.unit}</span></span>
                   {d.chg != null && <span style={{ fontSize: "var(--fs-sm)", color: dUp ? C.green : C.red }}>{dUp ? "+" : ""}{d.chg}</span>}
                 </div>
+                {d.outdated && (
+                  <div className="note note--warn" style={{ marginBottom: 6, fontSize: "var(--fs-2xs)" }}>
+                    ⚠ Nicht aktuell: {d.outdatedNote}
+                  </div>
+                )}
                 <div className="muted" style={{ marginBottom: 6 }}>
                   Stand: {d.latestDate || "—"}
                   {d.source && <span style={{ color: d.source === "fred" ? null : C.blue }}> · Quelle: {d.source.toUpperCase()}</span>}
@@ -846,40 +854,93 @@ function DiagPanel({ diag, diagBusy, diagErr, runDiag }) {
 // Format, leere Antwort) still auf world=false zurueck. Die Elternkomponente
 // (GeoPanel) zeigt in dem Fall einfach nur die Laenderliste, die unabhaengig
 // davon funktioniert.
+// Zwei unabhaengige Quellen fuer die Laendergrenzen. Frueher gab es nur die
+// erste; schlug sie fehl, verschwand die Karte KOMMENTARLOS (return null) und
+// niemand konnte sehen, woran es lag - "die Karte geht nicht" ohne jeden
+// Anhaltspunkt. Jetzt: zweite Quelle als Rueckfall, und wenn auch die nicht
+// traegt, sagt die Komponente warum.
+const GEO_MAP_SOURCES = [
+  { name: "world.geo.json", url: "https://cdn.jsdelivr.net/gh/johan/world.geo.json@master/countries.geo.json" },
+  // Natural Earth (gemeinfrei, aktiv gepflegt). Groesser, aber unabhaengiger
+  // Anbieterpfad - faellt jsDelivr fuer das erste Repo aus, traegt oft noch dieser.
+  { name: "Natural Earth 110m", url: "https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_110m_admin_0_countries.geojson" },
+];
+
 function GeoWorldMap({ geo, geoSel, setGeoSel }) {
-  const [world, setWorld] = useState(null); // null=laedt, false=nicht verfuegbar, Array=Features
+  const [world, setWorld] = useState(null);      // null=laedt, Array=Features
+  const [mapErr, setMapErr] = useState(null);    // gesetzt, wenn KEINE Quelle trug
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const ctrl = new AbortController();
-      const to = setTimeout(() => ctrl.abort(), 10000); // ohne Timeout haengt "Weltkarte lädt…" ewig, falls der CDN nicht antwortet
-      try {
-        const res = await fetch("https://cdn.jsdelivr.net/gh/johan/world.geo.json@master/countries.geo.json", { signal: ctrl.signal });
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        const gj = await res.json();
-        const features = gj && Array.isArray(gj.features) ? gj.features : null;
-        if (!features || !features.length) throw new Error("keine Features in der Antwort");
-        if (!cancelled) setWorld(features);
-      } catch (e) { if (!cancelled) setWorld(false); }
-      finally { clearTimeout(to); }
+      const fehler = [];
+      for (const src of GEO_MAP_SOURCES) {
+        const ctrl = new AbortController();
+        // Ohne Timeout haengt "Weltkarte lädt…" ewig, falls der CDN nicht antwortet.
+        const to = setTimeout(() => ctrl.abort(), 10000);
+        try {
+          const res = await fetch(src.url, { signal: ctrl.signal });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const gj = await res.json();
+          const features = gj && Array.isArray(gj.features) ? gj.features : null;
+          if (!features || !features.length) throw new Error("keine Features in der Antwort");
+          if (!cancelled) setWorld(features);
+          return;
+        } catch (e) {
+          fehler.push(`${src.name}: ${ctrl.signal.aborted ? "Zeitüberschreitung nach 10s" : (e && e.message) || e}`);
+        } finally { clearTimeout(to); }
+      }
+      if (!cancelled) setMapErr(fehler.join(" | "));
     })();
     return () => { cancelled = true; };
   }, []);
 
+  if (mapErr) {
+    return (
+      <div className="note note--warn" style={{ marginBottom: 8, fontSize: "var(--fs-2xs)" }}>
+        ⚠ Weltkarte nicht ladbar ({mapErr}). Die Länderliste unten ist davon nicht betroffen und zeigt dieselben Daten.
+      </div>
+    );
+  }
   if (world === null) return <div className="muted" style={{ padding: "8px 0" }}>Weltkarte lädt…</div>;
-  if (world === false) return null; // stiller Fallback, Liste unten deckt die Funktion weiterhin ab
 
-  const W = 960, H = 500;
+  // Gleichwinklige Zylinderprojektion: 360° Laenge auf 180° Breite ergibt
+  // zwingend ein 2:1-Verhaeltnis. Vorher stand hier H=500 bei W=960 - dadurch
+  // war die Karte um gut 4% vertikal gestreckt.
+  const W = 960, H = 480;
   const project = (lon, lat) => [((lon + 180) / 360) * W, ((90 - lat) / 180) * H];
-  const ringPath = (ring) => ring.map((pt, i) => { const [x, y] = project(pt[0], pt[1]); return (i === 0 ? "M" : "L") + x.toFixed(1) + "," + y.toFixed(1); }).join(" ") + "Z";
+  const ringPath = (ring) => {
+    let d = "";
+    for (let i = 0; i < ring.length; i++) {
+      const pt = ring[i];
+      if (!Array.isArray(pt)) continue;
+      const [x, y] = project(pt[0], pt[1]);
+      // Ein einziger fehlerhafter Punkt wuerde sonst "NaN,NaN" in den Pfad
+      // schreiben und damit das GESAMTE Land unsichtbar machen.
+      if (!isFinite(x) || !isFinite(y)) continue;
+      d += (d === "" ? "M" : "L") + x.toFixed(1) + "," + y.toFixed(1);
+    }
+    return d ? d + "Z" : "";
+  };
   const geomPath = (geom) => {
     if (!geom) return "";
-    if (geom.type === "Polygon") return geom.coordinates.map(ringPath).join(" ");
-    if (geom.type === "MultiPolygon") return geom.coordinates.map((poly) => poly.map(ringPath).join(" ")).join(" ");
+    if (geom.type === "Polygon") return (geom.coordinates || []).map(ringPath).join(" ");
+    if (geom.type === "MultiPolygon") return (geom.coordinates || []).map((poly) => (poly || []).map(ringPath).join(" ")).join(" ");
     return "";
   };
-  const isoOf = (f) => String(f.id || (f.properties && (f.properties.iso_a3 || f.properties.ISO_A3 || f.properties.iso3)) || "").toUpperCase();
+  // Der ISO3-Code steckt je nach Quelle woanders: world.geo.json fuehrt ihn als
+  // feature.id, Natural Earth in den properties. Bei Natural Earth ist ISO_A3
+  // ausserdem fuer einige Staaten (u.a. Frankreich und Norwegen) auf "-99"
+  // gesetzt - der tatsaechliche Code steht dort nur in ISO_A3_EH. Ohne diese
+  // Sonderbehandlung blieben genau diese Laender auf der Karte ungefaerbt.
+  const isoOf = (f) => {
+    const p = f.properties || {};
+    for (const cand of [f.id, p.iso_a3, p.ISO_A3, p.ISO_A3_EH, p.ADM0_A3, p.iso3]) {
+      const v = String(cand || "").toUpperCase();
+      if (v && v !== "-99" && v.length === 3) return v;
+    }
+    return "";
+  };
 
   return (
     <div className="panel" style={{ padding: 8, marginBottom: 8 }}>
@@ -1545,7 +1606,7 @@ function App() {
       {tab === "makro" && (
         <div className="page">
           <div className="toolbar">
-            <span className="muted">Konjunkturdaten USA + Euro-Raum · Quelle: FRED (St. Louis Fed, spiegelt auch OECD-/EZB-Reihen)</span>
+            <span className="muted">Konjunkturdaten USA + Euro-Raum · Quelle: FRED (St. Louis Fed, spiegelt auch Eurostat-/EZB-Reihen)</span>
             <div className="spacer" />
             <button className="btn btn--ghost" onClick={loadMacro} disabled={macroBusy}>{macroBusy ? "…" : "↻ AKTUALISIEREN"}</button>
           </div>
