@@ -986,7 +986,15 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
       <div className="note" style={{ marginBottom: 8 }}>
         <div>Beobachtete Länder: aktive UCDP-Konfliktländer + eine von Hand kuratierte, kurze Liste geopolitisch dauerhaft relevanter Staaten (max. 20). <b style={{ color: C.text }}>Keine erschöpfende Weltabdeckung.</b></div>
         <div>Stufe kombiniert: GDELT-Artikelvolumen (Konflikt-Schlagwörter, 7 Tage) + ob UCDP oder ReliefWeb aktuell einen Konflikt für das Land führt. {geo?.generatedAt && <span>Stand: {new Date(geo.generatedAt).toLocaleString("de-DE")}</span>}</div>
-        {geo?.ucdpError && <div style={{ color: C.amber, marginTop: 3 }}>⚠ UCDP nicht erreichbar ({geo.ucdpError}) — nur feste Länderliste + GDELT aktiv.</div>}
+        {/* Zwei verschiedene Dinge, die nicht gleich aussehen duerfen: ein
+            echter Ausfall verlangt Aufmerksamkeit, eine bewusst uebersprungene
+            Zusatzquelle nicht. UCDP verlangt seit Kurzem einen kostenlosen
+            Zugangstoken - ohne ihn wird die Quelle absichtlich ausgelassen und
+            die Laenderliste kommt vollstaendig aus der kuratierten Liste. */}
+        {geo?.ucdpError && (/übersprungen/.test(geo.ucdpError)
+          ? <div className="muted" style={{ marginTop: 3 }}>UCDP-Konfliktdaten nicht aktiviert ({geo.ucdpError}) — die Länderauswahl kommt aus der kuratierten Liste, GDELT ist unabhängig davon aktiv.</div>
+          : <div style={{ color: C.amber, marginTop: 3 }}>⚠ UCDP nicht erreichbar ({geo.ucdpError}) — nur feste Länderliste + GDELT aktiv.</div>
+        )}
         {geo?.reliefwebError && !/übersprungen/.test(geo.reliefwebError) && <div style={{ color: C.amber, marginTop: 3 }}>⚠ ReliefWeb nicht erreichbar ({geo.reliefwebError}).</div>}
       </div>
 
@@ -997,7 +1005,9 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
           "warum kommt hier nichts an?" offen, und genau die beantwortet das Panel.
           ReliefWebs Skip-Meldung ("übersprungen: kein Appname") ist erwartetes
           Verhalten, kein Ausfall - loest das Panel deshalb nicht aus. */}
-      {(geoErr || geo?.ucdpError || (geo?.reliefwebError && !/übersprungen/.test(geo.reliefwebError))) && (
+      {(geoErr
+        || (geo?.ucdpError && !/übersprungen/.test(geo.ucdpError))
+        || (geo?.reliefwebError && !/übersprungen/.test(geo.reliefwebError))) && (
         <DiagPanel diag={diag} diagBusy={diagBusy} diagErr={diagErr} runDiag={runDiag} />
       )}
 

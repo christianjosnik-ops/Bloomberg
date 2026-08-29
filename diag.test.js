@@ -24,7 +24,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.strictEqual(r.dataArrayLength, 1, "Laenge des data-Arrays muss gemeldet werden");
     assert.ok(typeof r.ms === "number", "Dauer muss gemessen werden");
     assert.ok(r.bodySnippet.includes("Test"));
-    console.log("Block 1/9 (Erfolgsfall: Status/JSON-Struktur/Dauer): OK");
+    console.log("Block 1/13 (Erfolgsfall: Status/JSON-Struktur/Dauer): OK");
   }
 
   // --- 400 mit Fehlertext: der Koerper ist die eigentliche Information ---
@@ -39,7 +39,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.status, 400);
     assert.ok(r.bodySnippet.includes("Invalid value"), "der erklaerende Fehlertext MUSS im Auszug landen - er ist der ganze Zweck der Diagnose");
-    console.log("Block 2/9 (4xx: Fehlertext des Servers bleibt erhalten): OK");
+    console.log("Block 2/13 (4xx: Fehlertext des Servers bleibt erhalten): OK");
   }
 
   // --- Zeitueberschreitung: klare Meldung statt Haenger ---
@@ -54,7 +54,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.strictEqual(r.ok, false);
     assert.ok(/Zeitueberschreitung/.test(r.error), "muss die Zeitueberschreitung benennen, statt einen rohen Abbruch zu melden");
     assert.ok(dt < 8000, "die Probe muss selbst abbrechen (gemessen: " + dt + "ms)");
-    console.log("Block 3/9 (Zeitueberschreitung sauber gemeldet, " + (dt / 1000).toFixed(1) + "s): OK");
+    console.log("Block 3/13 (Zeitueberschreitung sauber gemeldet, " + (dt / 1000).toFixed(1) + "s): OK");
   }
 
   // --- Netzwerkfehler: .cause enthaelt bei fetch oft erst den echten Grund ---
@@ -65,7 +65,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.error, "fetch failed");
     assert.ok(/ENOTFOUND/.test(r.errorCause), "der eigentliche Grund steckt in .cause und darf nicht verlorengehen");
-    console.log("Block 4/9 (Netzwerkfehler: .cause wird mitgemeldet): OK");
+    console.log("Block 4/13 (Netzwerkfehler: .cause wird mitgemeldet): OK");
   }
 
   // --- Kaputtes JSON trotz JSON-Content-Type darf die Diagnose nicht abschiessen ---
@@ -79,7 +79,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const r = await probe({ key: "html", label: "HTML statt JSON", url: "https://example.invalid/e" });
     assert.ok(r.jsonParseError, "muss den Parse-Fehler melden statt zu werfen");
     assert.ok(r.bodySnippet.includes("Cloudflare"), "der HTML-Auszug entlarvt die Bot-Sperre");
-    console.log("Block 5/9 (HTML statt JSON: Bot-Sperre wird sichtbar): OK");
+    console.log("Block 5/13 (HTML statt JSON: Bot-Sperre wird sichtbar): OK");
   }
 
   // --- Handler: Gesamtantwort ist gueltiges JSON mit Zusammenfassung, auch wenn alles scheitert ---
@@ -96,7 +96,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     // Sicherheitsnetz: es darf nichts Geheimes im Bericht landen
     const asText = JSON.stringify(body);
     assert.ok(!/token=|apikey=|api_key=|Cookie/i.test(asText), "der Bericht darf keine Schluessel oder Cookies enthalten");
-    console.log("Block 6/9 (Handler: robust + keine Geheimnisse im Bericht): OK");
+    console.log("Block 6/13 (Handler: robust + keine Geheimnisse im Bericht): OK");
   }
 
   // --- expectStatus: eine Probe, die fehlschlagen SOLL, gilt als bestanden ---
@@ -114,7 +114,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.strictEqual(r.wieErwartet, true, "410 war genau der erwartete Status");
     assert.strictEqual(r.ok, true, "eine Probe mit erwartetem Fehlstatus darf nicht als Ausfall gezaehlt werden");
     assert.ok(/decommissioned/.test(r.bodySnippet), "die Begruendung bleibt trotzdem sichtbar");
-    console.log("Block 7/9 (erwarteter Fehlstatus zaehlt als bestanden): OK");
+    console.log("Block 7/13 (erwarteter Fehlstatus zaehlt als bestanden): OK");
   }
 
   // --- expectStatus: abweichender Status faellt auf ---
@@ -128,7 +128,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const r = await probe({ key: "v1", label: "v1 abgeschaltet", url: "https://example.invalid/v1", expectStatus: 410 });
     assert.strictEqual(r.wieErwartet, false, "wenn v1 ploetzlich wieder antwortet, muss das auffallen");
     assert.strictEqual(r.ok, false);
-    console.log("Block 8/9 (abweichender Status wird als Abweichung gemeldet): OK");
+    console.log("Block 8/13 (abweichender Status wird als Abweichung gemeldet): OK");
   }
 
   // --- FRED-Sammelproben: eine je Frequenzgruppe, erzeugt aus derselben
@@ -174,7 +174,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const warnAlt = p.expect(`${kopf}\n${zeile("2022-12-01")}\n${zeile("2023-01-01")}`);
     assert.ok(warnAlt && /eingestellt/.test(warnAlt),
       "vorhandene IDs mit jahrealten Daten muessen als vermutlich eingestellt gemeldet werden - sonst wiederholt sich der LRHUTTTTEZM156S-Fall");
-    console.log("Block 9/9a (FRED-Sammelproben: je Frequenzgruppe eine, erkennen Luecken und Veraltetes): OK");
+    console.log("Block 9a/13 (FRED-Sammelproben: je Frequenzgruppe eine, erkennen Luecken und Veraltetes): OK");
   }
 
   // --- Appname per Umgebungsvariable: Live-Befund HTTP 403 "not using an
@@ -196,7 +196,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const rwProbesEnv = PROBES.filter((p) => p.key.startsWith("reliefweb"));
     assert.ok(rwProbesEnv.length >= 3 && rwProbesEnv.every((p) => p.url.includes("appname=mein-genehmigter-appname")),
       "ein per Umgebungsvariable gesetzter Appname muss in ALLEN ReliefWeb-Proben ankommen (auch dem v1-Beleg)");
-    console.log("Block 9/9b (Appname konfigurierbar, country.iso2 dauerhaft entfernt): OK");
+    console.log("Block 9b/13 (Appname konfigurierbar, country.iso2 dauerhaft entfernt): OK");
   }
 
   // --- UCDP: die neue Hauptquelle fuer F6 hat eigene Beleg-Proben ---
@@ -220,7 +220,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const body = JSON.parse(res.body);
     assert.strictEqual(body.proben.length, 2, "only=ucdp muss beide Monatsproben auswaehlen (laufender Monat + Vormonat)");
     assert.ok(body.proben.some((p) => p.key === "ucdp-monat-aktuell") && body.proben.some((p) => p.key === "ucdp-monat-vormonat"));
-    console.log("Block 10/11 (UCDP-Proben folgen dem aktuellen Datum und pruefen die Antwortform): OK");
+    console.log("Block 10/13 (UCDP-Proben folgen dem aktuellen Datum und pruefen die Antwortform): OK");
   }
 
   // --- GDELT-Timeline-Probe: erkennt eine date/value-Zeitreihe im Antwortkoerper ---
@@ -233,7 +233,73 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.ok(p.expect(JSON.stringify({ articles: [{ title: "x", url: "https://x" }] })),
       "eine Artikel-Antwort ohne date/value muss als fehlende Zeitreihe auffallen");
     assert.ok(p.expect("kein-json"), "kaputte Antwort muss ebenfalls eine Warnung ergeben");
-    console.log("Block 11/11 (GDELT-Timeline-Probe erkennt die Zeitreihe, faellt sonst auf): OK");
+    console.log("Block 11/13 (GDELT-Timeline-Probe erkennt die Zeitreihe, faellt sonst auf): OK");
+  }
+
+  // --- Der Fehler, den der Livebetrieb aufgedeckt hat: vier tote FRED-Proben
+  //     a 6s ergaben sequenziell 24s und sprengten das interne 20s-Budget.
+  //     Alles danach - UCDP, ReliefWeb, GDELT, Yahoo, Stooq, Frankfurter -
+  //     wurde uebersprungen, der Bericht meldete "0 OK". Die Diagnose verschwieg
+  //     also ausgerechnet die Quellen, die funktionieren. Sie MUSS parallel
+  //     laufen: dann kostet der Durchlauf so viel wie die langsamste Probe. ---
+  {
+    const langsameHosts = ["fred.stlouisfed.org", "api.stlouisfed.org"];
+    global.fetch = async (url, opts) => {
+      const u = String(url);
+      if (langsameHosts.some((h) => u.includes(h))) {
+        // Tot: antwortet nie, nur der Abbruch beendet den Aufruf.
+        return new Promise((_, reject) => {
+          if (opts && opts.signal) opts.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
+        });
+      }
+      // Alle anderen antworten sofort.
+      return { ok: true, status: 200, headers: { get: () => "application/json" }, text: async () => '{"ok":true}' };
+    };
+    const diag = fresh();
+    const t0 = Date.now();
+    const res = await diag.handler({ httpMethod: "GET", queryStringParameters: {} });
+    const dt = Date.now() - t0;
+    const body = JSON.parse(res.body);
+
+    console.log(`  Dauer mit ${langsameHosts.length} toten Hosts:`, (dt / 1000).toFixed(1) + "s bei " + body.proben.length + " Proben");
+    assert.ok(dt < 12000,
+      `parallel darf der Durchlauf hoechstens so lange dauern wie die langsamste Probe - sequenziell waeren es ein Vielfaches (gemessen: ${dt}ms)`);
+
+    const uebersprungen = body.proben.filter((p) => p.skipped);
+    assert.deepStrictEqual(uebersprungen, [],
+      "keine Probe darf uebersprungen werden - genau dadurch blieb im Livebetrieb alles ab UCDP unbekannt");
+
+    // Und das Entscheidende: die funktionierenden Quellen muessen sichtbar sein,
+    // obwohl FRED tot ist.
+    assert.ok(body.zusammenfassung.ok.length > 0,
+      "die erreichbaren Quellen muessen als OK gemeldet werden, auch wenn andere haengen - im Livebetrieb stand hier faelschlich '0 OK'");
+    assert.ok(body.zusammenfassung.ok.some((k) => k.startsWith("gdelt") || k === "yahoo" || k === "frankfurter"),
+      "konkret: GDELT/Yahoo/Frankfurter duerfen nicht hinter toten FRED-Proben verschwinden");
+    console.log("Block 12/13 (tote Quellen verdecken die funktionierenden nicht mehr): OK");
+  }
+
+  // --- Trennschaerfe-Proben fuer die FRED-Ursache: erreichbar oder nicht? ---
+  {
+    const { PROBES } = fresh()._internal;
+    const erreichbarkeit = PROBES.find((p) => p.key === "fred-erreichbarkeit");
+    assert.ok(erreichbarkeit, "es muss eine Probe geben, die reine Erreichbarkeit ohne Serverberechnung prueft");
+    assert.ok(/robots\.txt/.test(erreichbarkeit.url),
+      "dafuer eignet sich eine winzige statische Datei - antwortet die schnell, liegt es an der CSV-Erzeugung, nicht am Netz");
+
+    const api = PROBES.find((p) => p.key === "fred-api-erreichbarkeit");
+    assert.ok(api && api.url.includes("api.stlouisfed.org"),
+      "die offizielle API liegt auf einer anderen Subdomain und kann anders erreichbar sein");
+    // Bewusst KEIN erwarteter Statuscode: ob FRED ohne Schluessel 400 oder 401
+    // liefert, ist nicht sicher belegt, und ein falsch erwarteter Code faerbte
+    // die Probe faelschlich rot. Entscheidend ist, DASS schnell geantwortet
+    // wird - der Inhalt wird geprueft, nicht die Zahl.
+    assert.strictEqual(api.expectStatus, undefined,
+      "die Probe darf sich nicht auf einen unbelegten Statuscode festlegen");
+    assert.strictEqual(api.expect('{"error_message":"Bad Request. The value for variable api_key is not registered."}'), null,
+      "eine Antwort, die den fehlenden Schluessel benennt, ist das erwartete Ergebnis");
+    assert.ok(api.expect("<html>irgendwas anderes</html>"),
+      "eine voellig andere Antwortform muss auffallen");
+    console.log("Block 13/13 (Proben trennen 'FRED langsam' von 'FRED nicht erreichbar'): OK");
   }
 
   console.log("\nAlle diag.js-Tests erfolgreich.");
