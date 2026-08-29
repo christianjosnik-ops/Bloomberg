@@ -34,8 +34,14 @@ const { fetchWithTimeout } = require("./lib/providers");
 const { flagEmoji, buildWatchlist } = require("./lib/geo-countries");
 
 const CACHE = new Map(); const TTL = 20 * 60 * 1000; // 20 Min - Weltlage aendert sich nicht sekuendlich
-const WAVE = 5;
-const PER_REQUEST_TIMEOUT = 3000; // GDELT je Land
+// Wellenbreite und Einzeltimeout haengen an der Laenge der Beobachtungsliste:
+// 20 Laender / 7 je Welle = 3 Wellen a 2500ms = 7500ms - das passt in das
+// Gesamtbudget, auch wenn UCDP mangels Token sofort uebersprungen wird und
+// GDELT damit praktisch die ganze Zeit bekommt. Mit den frueheren Werten
+// (5 je Welle, 3000ms) waeren es 4 Wellen und 12000ms gewesen: ein Drittel der
+// Laender waere dauerhaft "nicht geprueft" geblieben. Ein Test rechnet das nach.
+const WAVE = 7;
+const PER_REQUEST_TIMEOUT = 2500; // GDELT je Land
 const RELIEFWEB_TIMEOUT = 3000;   // ReliefWeb-Sammelabruf (ein Aufruf fuer alle Laender)
 const UCDP_TIMEOUT = 2500;        // je einzelnem Versions-Versuch
 const UCDP_MIN_ATTEMPT_MS = 400;  // darunter lohnt kein weiterer Versuch mehr
@@ -195,7 +201,24 @@ function ucdpUrls(now, monthsBack) {
 // CACHE und der Circuit Breaker - gilt also je warmer Instanz, nicht global.
 let UCDP_LAST_GOOD_URL = null;
 
+// ZUGANGSTOKEN. Live-Beleg aus dem Betrieb:
+//   HTTP 401 – "API token required. Add header: x-ucdp-access-token: <your-token>"
+//
+// UCDP hat den offenen Zugang geschlossen. Das ist keine Frage der Version oder
+// der Anfrageform - ohne Token antwortet die API grundsaetzlich mit 401. Der
+// Token ist kostenlos (5000 Anfragen/Tag), wird aber nicht automatisiert
+// vergeben: man schreibt eine kurze Mail an mertcan.yilmaz@pcr.uu.se mit Name,
+// Zugehoerigkeit und Verwendungszweck.
+//
+// Ohne Token wird UCDP gar nicht erst angefragt. Ein garantierter 401 kostet
+// nur Zeit aus dem knappen Budget, die GDELT fuer die Laenderabfragen braucht -
+// dieselbe Lehre wie bei ReliefWebs Appname-Sperre.
+const UCDP_TOKEN = process.env.UCDP_ACCESS_TOKEN || "";
+
 async function fetchUcdp(deadline) {
+  if (!UCDP_TOKEN) {
+    throw new Error("übersprungen: kein Zugangstoken konfiguriert (UCDP_ACCESS_TOKEN) – UCDP verlangt seit Kurzem einen kostenlosen Token, anzufragen per Mail an mertcan.yilmaz@pcr.uu.se");
+  }
   const attempts = [];
   let versuche = 0;
   const urls = ucdpUrls(new Date());
@@ -212,8 +235,14 @@ async function fetchUcdp(deadline) {
     if (rest < UCDP_MIN_ATTEMPT_MS) { attempts.push(`Zeitbudget nach ${versuche} Versuchen erreicht`); break; }
     versuche++;
     try {
-      const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } },
+      const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA, "x-ucdp-access-token": UCDP_TOKEN } },
         Math.max(UCDP_MIN_ATTEMPT_MS, Math.min(UCDP_TIMEOUT, rest)));
+      // 401 = der Token fehlt oder gilt nicht. Weitere Versionen zu probieren
+      // aendert daran nichts - jede von ihnen antwortet identisch.
+      if (res.status === 401) {
+        attempts.push("UCDP HTTP 401 – Zugangstoken fehlt oder ist ungueltig (UCDP_ACCESS_TOKEN pruefen)");
+        break;
+      }
       // 404 = diese Version gibt es (noch) nicht. Das ist der Normalfall beim
       // Rueckwaertslaufen und keine Meldung wert - sonst bestuende der Fehlertext
       // am Ende aus einem Dutzend nichtssagender 404-Zeilen.

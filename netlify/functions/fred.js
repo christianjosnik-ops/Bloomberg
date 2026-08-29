@@ -1,11 +1,23 @@
 // Netlify Function: /.netlify/functions/fred?ids=UNRATE,CPIAUCSL,...  (Sammelabruf je Frequenzgruppe, parallel)
 //                    /.netlify/functions/fred?id=UNRATE               (Einzelabruf, Legacy)
 //
-// Makrodaten ausschliesslich ueber den FRED-CSV-Endpunkt (fredgraph.csv), ohne
-// API-Key. Deckt neben US-Serien auch Euro-Raum-Serien ab, weil FRED zahlreiche
-// OECD-/ECB-Reihen unter regulaeren FRED-IDs mitfuehrt (z.B. ECBDFR fuer den
-// EZB-Einlagensatz) - dieselbe Function/Pipeline bedient also beide Regionen,
-// ohne einen zweiten Provider zu integrieren.
+// Makrodaten fuer USA UND Euro-Raum aus einer Quelle: FRED fuehrt zahlreiche
+// Eurostat-/EZB-Reihen unter regulaeren FRED-IDs mit (z.B. ECBDFR fuer den
+// EZB-Einlagensatz), dieselbe Pipeline bedient also beide Regionen.
+//
+// ZWEI WEGE zu FRED, in dieser Reihenfolge:
+//   1. Offizielle API (api.stlouisfed.org) - nur wenn FRED_API_KEY gesetzt ist.
+//      Kostenloser Schluessel mit Sofortregistrierung.
+//   2. fredgraph.csv - der Download der Weboberflaeche, ohne Schluessel.
+//
+// Warum ueberhaupt zwei: Im Livebetrieb lief JEDE Anfrage an
+// fred.stlouisfed.org in einen Timeout - auch die winzige Einzelserie mit nur
+// zwei Jahren Zeitraum. Kein 403, keine Fehlerseite, schlicht keine Antwort.
+// fredgraph ist eben die Download-Funktion der Weboberflaeche und nicht als
+// Schnittstelle gedacht. Die offizielle API liegt auf einer anderen Subdomain,
+// ist als Schnittstelle ausgelegt und liefert schlankes JSON statt einer
+// Diagrammberechnung. Die Diagnose-Proben "fred-erreichbarkeit" und
+// "fred-api-erreichbarkeit" zeigen, welcher Weg auf der echten Instanz traegt.
 //
 // FRUEHER gab es hier zusaetzlich DBnomics als Rueckfallebene. Per Live-
 // Diagnose auf der echten Instanz nachweislich tot: beide Pfadformen
@@ -148,6 +160,59 @@ const BROWSER_HEADERS = {
   "Accept-Language": "en-US,en;q=0.9",
   "Referer": "https://fred.stlouisfed.org/",
 };
+
+// --- Offizielle FRED-API als bevorzugter Weg, wenn ein Schluessel vorliegt ---
+//
+// Anlass: Im Livebetrieb lief JEDE Anfrage an fred.stlouisfed.org in einen
+// Timeout - auch die winzige Einzelserie. Kein 403, keine Fehlerseite, schlicht
+// keine Antwort. Der fredgraph-Endpunkt ist eben die Download-Funktion der
+// Weboberflaeche und nicht als Schnittstelle gedacht; er kann langsam sein oder
+// Anfragen aus Rechenzentren abweisen.
+//
+// Die offizielle API liegt auf einer anderen Subdomain (api.stlouisfed.org),
+// ist als Schnittstelle ausgelegt und dokumentiert - sie braucht aber einen
+// kostenlosen Schluessel (Sofortregistrierung, anders als bei UCDP). Ist
+// FRED_API_KEY gesetzt, laeuft alles darueber; sonst bleibt es beim bisherigen
+// Weg. Die Diagnose-Probe "fred-api-erreichbarkeit" zeigt, ob diese Subdomain
+// ueberhaupt antwortet.
+const FRED_API_KEY = process.env.FRED_API_KEY || "";
+
+// Holt mehrere Serien ueber die offizielle API. Sie kennt keinen Sammelabruf,
+// also eine Anfrage je Serie - dafuer parallel, was hier unproblematisch ist:
+// es sind schlanke JSON-Abrufe ohne die Diagrammberechnung von fredgraph.
+async function fromFredApi(ids, timeoutMs, now) {
+  const cosd = new Date(); cosd.setFullYear(cosd.getFullYear() - BATCH_YEARS);
+  const von = cosd.toISOString().slice(0, 10);
+  const ergebnisse = await Promise.allSettled(ids.map(async (id) => {
+    const url = "https://api.stlouisfed.org/fred/series/observations"
+      + `?series_id=${encodeURIComponent(id)}&api_key=${encodeURIComponent(FRED_API_KEY)}`
+      + `&file_type=json&observation_start=${von}`;
+    const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": BROWSER_HEADERS["User-Agent"] } }, timeoutMs);
+    if (!res.ok) {
+      let detail = "";
+      try { detail = (await res.text()).slice(0, 150).replace(/\s+/g, " ").trim(); } catch (_) {}
+      throw new Error(`FRED-API HTTP ${res.status}${detail ? " – " + detail : ""}`);
+    }
+    const json = await res.json();
+    const obs = Array.isArray(json && json.observations) ? json.observations : null;
+    if (!obs) throw new Error("FRED-API: kein observations-Array in der Antwort");
+    const rows = [];
+    for (const o of obs) {
+      // Fehlende Werte schreibt auch die API als "." - parseFloat ergibt NaN.
+      const v = parseFloat(o && o.value);
+      if (o && o.date && !isNaN(v)) rows.push({ t: String(o.date), v });
+    }
+    return [id, shapeSeries(id, rows, now)];
+  }));
+  const out = {};
+  const fehler = [];
+  ergebnisse.forEach((r, i) => {
+    if (r.status === "fulfilled" && r.value[1]) out[r.value[0]] = r.value[1];
+    else if (r.status === "rejected") fehler.push(`${ids[i]}: ${String((r.reason && r.reason.message) || r.reason)}`);
+  });
+  if (!Object.keys(out).length) throw new Error("FRED-API lieferte keine Serie" + (fehler.length ? " – " + fehler.join(" | ") : ""));
+  return out;
+}
 
 // Aus rohen {t, v}-Punkten das einheitliche Ausgabeformat bauen. Die
 // Aktualitaetspruefung sitzt bewusst HIER und nicht in den einzelnen Abruf-
@@ -317,8 +382,30 @@ exports.handler = async (event) => {
 
     const batchFehler = [];
     if (stillMissing.length) {
-      const gruppen = [...gruppiereNachFrequenz(stillMissing).entries()];
       const budget = Math.max(MIN_ATTEMPT_MS, Math.min(FRED_BATCH_TIMEOUT, timeLeft(deadline)));
+
+      // Mit Schluessel laeuft alles ueber die offizielle API. Dort entfaellt die
+      // Frequenzgruppierung: jede Serie kommt einzeln und unveraendert, es gibt
+      // also gar keine gemeinsame Zeitachse, auf der etwas aggregiert werden
+      // koennte.
+      if (FRED_API_KEY) {
+        try {
+          const daten = await fromFredApi(stillMissing, budget);
+          for (const id of Object.keys(daten)) {
+            const years = Math.min(50, Math.max(1, parseInt(qp.years || DEFAULT_YEARS[id] || 10, 10) || 10));
+            const data = Object.assign({}, daten[id], { source: "fred-api" });
+            CACHE.set(`${id}:${years}`, { ts: Date.now(), data });
+            cachedHits[id] = data;
+          }
+          const fehlend = stillMissing.filter((id) => !daten[id]);
+          if (fehlend.length) batchFehler.push("FRED-API lieferte nichts fuer: " + fehlend.join(", "));
+        } catch (e) {
+          batchFehler.push("FRED-API: " + String((e && e.message) || e));
+        }
+      }
+
+      const nochOffen = stillMissing.filter((id) => !cachedHits[id]);
+      const gruppen = nochOffen.length ? [...gruppiereNachFrequenz(nochOffen).entries()] : [];
       const ergebnisse = await Promise.allSettled(
         gruppen.map(([, gruppenIds]) => fromFredCsvBatch(gruppenIds, budget))
       );
@@ -385,4 +472,4 @@ exports.handler = async (event) => {
 };
 
 // Fuer Tests: Einzelfunktionen ohne HTTP-Handler-Wrapper zugaenglich machen.
-exports._internal = { fetchOne, fromFredCsv, fromFredCsvBatch, shapeSeries, gruppiereNachFrequenz, freqOf, SERIES_FREQ, markiereAktualitaet, MAX_AGE_DAYS, MAX_AGE_FALLBACK_DAYS, FUNCTION_BUDGET_MS, MIN_ATTEMPT_MS, BATCH_YEARS };
+exports._internal = { fetchOne, fromFredCsv, fromFredCsvBatch, fromFredApi, shapeSeries, gruppiereNachFrequenz, freqOf, SERIES_FREQ, markiereAktualitaet, MAX_AGE_DAYS, MAX_AGE_FALLBACK_DAYS, FUNCTION_BUDGET_MS, MIN_ATTEMPT_MS, BATCH_YEARS };

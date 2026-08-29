@@ -57,6 +57,35 @@ const RELIEFWEB_BASE = "https://api.reliefweb.int/v2/disasters"
   + "?appname=" + encodeURIComponent(RELIEFWEB_APPNAME) + RW_FIELDS + "&sort[]=date.created:desc&limit=5";
 
 const PROBES = [
+  // --- Trennschaerfe-Proben: warum antwortet FRED nicht? ---------------------
+  //
+  // Der Livebetrieb zeigte: JEDE FRED-Abfrage laeuft in 6s Timeout, auch die
+  // kleine Einzelserie. Kein 403, kein HTML, keine Fehlerseite - schlicht keine
+  // Antwort. Daraus allein laesst sich die Ursache nicht ableiten, und Raten
+  // hat hier schon zweimal zu falschen Diagnosen gefuehrt. Die folgenden drei
+  // Proben trennen die moeglichen Ursachen sauber voneinander:
+  {
+    // Eine winzige, statische Datei ohne jede Berechnung auf FRED-Seite.
+    // Antwortet SIE schnell, ist der Host erreichbar und das Problem liegt an
+    // der CSV-Erzeugung (zu langsam). Laeuft auch sie ins Timeout, ist der Host
+    // von dieser Netlify-Region aus schlicht nicht erreichbar - dann helfen
+    // weder Header noch Timeouts, sondern nur ein anderer Weg.
+    key: "fred-erreichbarkeit",
+    label: "FRED Erreichbarkeit (robots.txt – statisch, ohne Berechnung)",
+    url: "https://fred.stlouisfed.org/robots.txt",
+    headers: { "User-Agent": UA },
+  },
+  {
+    // Die offizielle FRED-API liegt auf einer ANDEREN Subdomain und damit
+    // moeglicherweise hinter anderer Infrastruktur. Ohne Schluessel antwortet
+    // sie mit einem Fehler - aber ein SCHNELLER Fehler beweist Erreichbarkeit
+    // und macht den Weg ueber einen (kostenlosen) API-Schluessel zur Loesung.
+    key: "fred-api-erreichbarkeit",
+    label: "FRED offizielle API (api.stlouisfed.org) – erwartet HTTP 400 ohne Schluessel",
+    url: "https://api.stlouisfed.org/fred/series/observations?series_id=UNRATE&file_type=json",
+    headers: { "Accept": "application/json", "User-Agent": UA },
+    expectStatus: 400,
+  },
   {
     key: "fred-csv",
     label: "FRED CSV (Makro, Hauptquelle)",
@@ -261,15 +290,22 @@ exports.handler = async (event) => {
   const only = (qp.only || "").trim().toLowerCase();
   const list = only ? PROBES.filter((p) => p.key.includes(only)) : PROBES;
 
-  // Nacheinander statt parallel: parallel wuerden sich die Proben das
-  // Zeitbudget der Function teilen und gegenseitig ins Timeout treiben - genau
-  // das Problem, das hier diagnostiziert werden soll.
-  const results = [];
-  const started = Date.now();
-  for (const p of list) {
-    if (Date.now() - started > 20000) { results.push({ key: p.key, label: p.label, skipped: "Zeitbudget der Diagnose erreicht" }); continue; }
-    results.push(await probe(p));
-  }
+  // PARALLEL, nicht nacheinander.
+  //
+  // Vorher liefen die Proben sequenziell, mit der Begruendung, sie wuerden sich
+  // sonst gegenseitig das Zeitbudget nehmen. Der Livebetrieb hat gezeigt, dass
+  // genau das Gegenteil eintritt: vier tote FRED-Proben a 6s ergaben 24s und
+  // sprengten das 20s-Budget - alles danach (UCDP, ReliefWeb, GDELT, Yahoo,
+  // Stooq, Frankfurter) wurde uebersprungen. Der Bericht meldete "0 OK" und
+  // verschwieg ausgerechnet die Quellen, die funktionieren.
+  //
+  // Die Proben treffen verschiedene Hosts und warten fast nur auf das Netz;
+  // sie konkurrieren also gar nicht um dieselbe Ressource. Parallel kostet der
+  // Durchlauf so viel wie die LANGSAMSTE Probe statt der Summe aller - und
+  // liefert immer ein vollstaendiges Bild. Genau das ist der Zweck einer
+  // Diagnose: eine tote Quelle darf die Aussage ueber die anderen nicht
+  // verhindern.
+  const results = await Promise.all(list.map((p) => probe(p)));
 
   const summary = {
     ok: results.filter((r) => r.ok).map((r) => r.key),

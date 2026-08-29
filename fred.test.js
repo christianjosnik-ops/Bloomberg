@@ -34,7 +34,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(shaped.latest, 4.2);
     assert.strictEqual(shaped.chg, 0.2);
     assert.strictEqual(shaped.latestDate, "2026-06-01");
-    console.log("Block 1/16 (fromFredCsv: CSV korrekt geparst): OK");
+    console.log("Block 1/17 (fromFredCsv: CSV korrekt geparst): OK");
   }
 
   // --- fetchOne: Zeitbudget schon vor dem Aufruf erschoepft -> kein Netzwerkzugriff ---
@@ -47,7 +47,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const result = await fetchOne("UNRATE", null, deadline);
     assert.ok(result.error, "muss einen Fehler statt Daten liefern");
     assert.ok(!fetchCalled, "darf bei bereits abgelaufenem Budget gar nicht erst netzwerken");
-    console.log("Block 2/16 (fetchOne: erschoepftes Budget -> kein Netzwerkzugriff): OK");
+    console.log("Block 2/17 (fetchOne: erschoepftes Budget -> kein Netzwerkzugriff): OK");
   }
 
   // --- fetchOne: Provider-Timeouts werden auf die RESTZEIT gekappt, nicht die vollen Standardwerte ---
@@ -64,7 +64,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     console.log("  Dauer bei haengenden Providern und 0.9s Restbudget:", (dt / 1000).toFixed(2) + "s");
     assert.ok(dt < 1400, "Provider-Timeouts muessen auf die Restzeit gekappt werden, nicht auf die vollen 3s/2.5s-Standardwerte laufen");
     assert.ok(result.error, "muss trotzdem einen Fehler statt eines Haengers liefern");
-    console.log("Block 3/16 (fetchOne: Provider-Timeouts an Restbudget gekappt): OK");
+    console.log("Block 3/17 (fetchOne: Provider-Timeouts an Restbudget gekappt): OK");
   }
 
   // --- Handler: mehrere Serien/Wellen, alle Provider haengen -> Gesamtlaufzeit bleibt unter Netlifys Limit ---
@@ -83,7 +83,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const body = JSON.parse(res.body);
     const errors = Object.values(body).map((v) => v && v.error).filter(Boolean);
     assert.strictEqual(errors.length, 10, "alle 10 Serien muessen einen Fehler statt haengender Requests liefern");
-    console.log("Block 4/16 (Handler: Zeitbudget schuetzt ueber alle Wellen hinweg): OK");
+    console.log("Block 4/17 (Handler: Zeitbudget schuetzt ueber alle Wellen hinweg): OK");
   }
 
   // --- Handler: Batch-Cache-Treffer braucht kein Netzwerk ---
@@ -98,7 +98,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const second = await fred.handler({ httpMethod: "GET", queryStringParameters: { ids: "UNRATE" } });
     assert.strictEqual(calls, callsAfterFirst, "zweiter Aufruf innerhalb der TTL darf nicht erneut netzwerken");
     assert.strictEqual(JSON.parse(second.body).UNRATE.latest, 4.2);
-    console.log("Block 5/16 (Handler: Cache verhindert erneuten Netzwerkzugriff): OK");
+    console.log("Block 5/17 (Handler: Cache verhindert erneuten Netzwerkzugriff): OK");
   }
 
   // --- FRED antwortet mit HTML MIT Status 200 (Bot-Sperre) -> muss als solche benannt werden ---
@@ -113,7 +113,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     try { await fromFredCsv("UNRATE", 10, 3000); } catch (e) { msg = e.message; }
     assert.ok(msg && /HTML statt CSV/.test(msg), "eine Sperrseite mit Status 200 darf nicht als 'leeres Ergebnis' durchrutschen, sondern muss benannt werden");
     assert.ok(/Just a moment/.test(msg), "der Auszug der Sperrseite gehoert in die Meldung");
-    console.log("Block 6/16 (FRED: HTML-Sperrseite trotz Status 200 wird erkannt): OK");
+    console.log("Block 6/17 (FRED: HTML-Sperrseite trotz Status 200 wird erkannt): OK");
   }
 
   // --- FRED 4xx: der Antwortkoerper ist die eigentliche Begruendung ---
@@ -124,7 +124,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     let msg = null;
     try { await fromFredCsv("UNRATE", 10, 3000); } catch (e) { msg = e.message; }
     assert.ok(/403/.test(msg) && /Access denied/.test(msg), "Status UND Begruendung muessen in der Meldung stehen");
-    console.log("Block 7/16 (FRED: Fehlertext des Servers bleibt erhalten): OK");
+    console.log("Block 7/17 (FRED: Fehlertext des Servers bleibt erhalten): OK");
   }
 
   // --- CSV mit \r\n und fehlenden Werten (".") wird korrekt geparst ---
@@ -139,7 +139,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(shaped.series.length, 2, "die Zeile mit fehlendem Wert (.) muss uebersprungen werden");
     assert.strictEqual(shaped.latest, 4.2, "Windows-Zeilenenden duerfen den letzten Wert nicht verfaelschen");
     assert.strictEqual(shaped.chg, 0.2);
-    console.log("Block 8/16 (FRED: CRLF-Zeilenenden und fehlende Werte): OK");
+    console.log("Block 8/17 (FRED: CRLF-Zeilenenden und fehlende Werte): OK");
   }
 
   // --- Sammelabruf: mehrspaltiges CSV, fehlende Werte je Spalte ueberspringen ---
@@ -169,7 +169,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(out.GDP.latest, 29000.5);
     assert.strictEqual(out.GDP.series.length, 1, "fuer GDP darf nur die eine Zeile mit echtem Wert zaehlen, nicht die Punkte");
     assert.strictEqual(out.DGS10.latest, 4.3);
-    console.log("Block 9/16 (Sammelabruf: eine Anfrage, Spalten sauber getrennt): OK");
+    console.log("Block 9/17 (Sammelabruf: eine Anfrage, Spalten sauber getrennt): OK");
   }
 
   // --- Sammelabruf: Spaltenreihenfolge wird aus der Kopfzeile gelesen, nicht angenommen ---
@@ -184,7 +184,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const out = await fromFredCsvBatch(["UNRATE", "GDP"], 6000);
     assert.strictEqual(out.UNRATE.latest, 4.1, "die Zuordnung muss ueber die Kopfzeile laufen, nicht ueber die Anfragereihenfolge");
     assert.strictEqual(out.GDP.latest, 29100);
-    console.log("Block 10/16 (Sammelabruf: Zuordnung ueber die Kopfzeile): OK");
+    console.log("Block 10/17 (Sammelabruf: Zuordnung ueber die Kopfzeile): OK");
   }
 
   // --- Handler: EIN Sammelabruf JE FREQUENZGRUPPE deckt alle zehn Serien ab.
@@ -236,7 +236,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(Object.keys(body).length, 10);
     assert.ok(Object.values(body).every((v) => v && !v.error && v.latest != null), "alle zehn Serien muessen Daten haben");
     assert.strictEqual(body.UNRATE.source, "fred");
-    console.log(`Block 11/16 (Handler: ${urls.length} Sammelabrufe, je Frequenzgruppe einer, keine Mischung): OK`);
+    console.log(`Block 11/17 (Handler: ${urls.length} Sammelabrufe, je Frequenzgruppe einer, keine Mischung): OK`);
   }
 
   // --- Teilabdeckung: FRED laesst eine unbekannte ID stillschweigend aus der
@@ -263,7 +263,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const text = JSON.stringify(body);
     assert.ok(/CPIAUCSL/.test(text) && /keine Spalte/.test(text),
       "die weggelassene Serie muss namentlich benannt werden, statt wortlos in die Einzelabrufe zu rutschen: " + (body.CPIAUCSL && body.CPIAUCSL.error));
-    console.log("Block 11b/16 (Teilabdeckung innerhalb einer Frequenzgruppe wird benannt): OK");
+    console.log("Block 11b/17 (Teilabdeckung innerhalb einer Frequenzgruppe wird benannt): OK");
   }
 
   // --- Handler: scheitert der Sammelabruf, wird der Grund sichtbar mitgeliefert ---
@@ -281,7 +281,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const texte = Object.values(body).map((v) => v.error || "").join(" ");
     assert.ok(/Sammelabruf/.test(texte), "der Grund des Sammel-Fehlschlags muss in der Meldung auftauchen, nicht nur der Einzelfehler");
     assert.ok(/403|Access denied/.test(texte), "Statuscode bzw. Servertext des Sammelabrufs muessen erhalten bleiben");
-    console.log("Block 12/16 (Handler: Grund des Sammel-Fehlschlags bleibt sichtbar): OK");
+    console.log("Block 12/17 (Handler: Grund des Sammel-Fehlschlags bleibt sichtbar): OK");
   }
 
   // --- Euro-Raum-Serien (ueber FRED gespiegelte Eurostat-/EZB-Reihen) laufen
@@ -320,7 +320,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
       assert.strictEqual(body[id].latest, wert[id], `letzter Wert von ${id} - eine Verwechslung zwischen den Gruppen faellt hier auf`);
       assert.strictEqual(body[id].source, "fred", "Quelle bleibt einheitlich 'fred', kein separater EZB-Provider noetig");
     });
-    console.log(`Block 13/16 (Euro-Serien: ${urls.length} Abrufe nach Frequenz, Werte korrekt zugeordnet): OK`);
+    console.log(`Block 13/17 (Euro-Serien: ${urls.length} Abrufe nach Frequenz, Werte korrekt zugeordnet): OK`);
   }
 
   // --- Eingestellte Serie: FRED liefert weiter HTTP 200 und gueltiges CSV,
@@ -354,7 +354,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
 
     const taeglich = shapeSeries("DGS10", [{ t: "2026-08-01", v: 4.1 }, { t: "2026-08-04", v: 4.2 }], jetzt);
     assert.strictEqual(taeglich.outdated, true, "eine Tagesserie mit 24 Tagen Luecke ist auffaellig");
-    console.log("Block 14/16 (eingestellte Serien werden erkannt, normaler Verzug nicht): OK");
+    console.log("Block 14/17 (eingestellte Serien werden erkannt, normaler Verzug nicht): OK");
   }
 
   // --- Kein Auseinanderlaufen zwischen Presets und Aktualitaetsschwellen:
@@ -386,7 +386,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(md.EURO_MACRO_PRESETS.length, 4);
     assert.ok(!md.MACRO_PRESETS.some((m) => m.id === "LRHUTTTTEZM156S"),
       "die eingestellte OECD-Arbeitslosenserie darf nicht zurueckkehren - sie endet im Januar 2023");
-    console.log("Block 15/16 (jede Makro-Kachel hat gepflegte Aktualitaetsschwelle und Frequenz): OK");
+    console.log("Block 15/17 (jede Makro-Kachel hat gepflegte Aktualitaetsschwelle und Frequenz): OK");
   }
 
   // --- Ueberzaehlige IDs werden benannt, nicht stillschweigend abgeschnitten ---
@@ -407,7 +407,44 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
       "die 21. Serie muss einen erklaerenden Eintrag bekommen statt wortlos zu fehlen");
     assert.ok(body.SERIE21 && body.SERIE21.error, "ebenso die 22.");
     assert.ok(body.SERIE0 && !body.SERIE0.error, "die ersten 20 muessen normal geliefert werden");
-    console.log("Block 16/16 (ueberzaehlige Serien werden benannt statt still abgeschnitten): OK");
+    console.log("Block 16/17 (ueberzaehlige Serien werden benannt statt still abgeschnitten): OK");
+  }
+
+  // --- Offizielle FRED-API als bevorzugter Weg, wenn ein Schluessel vorliegt.
+  //     Anlass: im Livebetrieb lief JEDE Anfrage an fred.stlouisfed.org in einen
+  //     Timeout - auch die winzige Einzelserie. Der fredgraph-Endpunkt ist die
+  //     Download-Funktion der Weboberflaeche, keine Schnittstelle. Die offizielle
+  //     API liegt auf einer anderen Subdomain und ist als solche ausgelegt. ---
+  {
+    providers._resetBreakers();
+    const urls = [];
+    global.fetch = async (url) => {
+      urls.push(String(url));
+      return {
+        ok: true, status: 200,
+        json: async () => ({ observations: [
+          { date: "2026-05-01", value: "4.0" },
+          { date: "2026-06-01", value: "." },   // fehlende Werte gibt es auch hier
+          { date: "2026-07-01", value: "4.2" },
+        ] }),
+      };
+    };
+    process.env.FRED_API_KEY = "test-schluessel";
+    const fred = freshHandler();
+    const res = await fred.handler({ httpMethod: "GET", queryStringParameters: { ids: "UNRATE,GDP" } });
+    delete process.env.FRED_API_KEY;
+
+    assert.ok(urls.every((u) => u.includes("api.stlouisfed.org")),
+      "mit Schluessel muss die offizielle API genutzt werden, nicht der fredgraph-Endpunkt: " + urls[0]);
+    assert.ok(!urls.some((u) => u.includes("fredgraph")), "der langsame Weboberflaechen-Download darf dann gar nicht mehr angefasst werden");
+    const body = JSON.parse(res.body);
+    assert.strictEqual(body.UNRATE.latest, 4.2, "letzter Wert aus der API-Antwort");
+    assert.strictEqual(body.UNRATE.series.length, 2, 'Beobachtungen mit "." muessen uebersprungen werden');
+    assert.strictEqual(body.UNRATE.source, "fred-api", "die Herkunft muss unterscheidbar bleiben");
+    assert.ok(body.GDP && !body.GDP.error, "auch die zweite Serie muss kommen - die API kennt keinen Sammelabruf, also je Serie eine Anfrage");
+    assert.ok(!urls.some((u) => u.includes("test-schluessel") === false && u.includes("api_key=")) || urls.every((u) => u.includes("api_key=")),
+      "der Schluessel muss als api_key-Parameter mitgehen");
+    console.log("Block 17/17 (mit FRED_API_KEY laeuft alles ueber die offizielle API): OK");
   }
 
   console.log("\nAlle fred.js-Tests erfolgreich.");
