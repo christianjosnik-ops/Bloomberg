@@ -1,20 +1,20 @@
 // Netlify Function: /.netlify/functions/geopolitics
 //
-// Weltlage-Uebersicht (F6) aus mehreren kostenlosen Quellen OHNE API-Key:
-//   - UCDP (Uppsala Conflict Data Program): offene, schluessellose Konflikt-
-//     ereignisse je Land - liefert die dynamische Laenderliste (Hauptquelle)
-//   - ReliefWeb (UN OCHA): zusaetzliche Krisenmeldungen, ABER nur aktiv, wenn
-//     RELIEFWEB_APPNAME gesetzt ist (siehe Kommentar bei fetchReliefWeb)
+// Weltlage-Uebersicht (F6) aus zwei kostenlosen Quellen:
+//   - UCDP (Uppsala Conflict Data Program): Konfliktereignisse je Land -
+//     liefert die dynamische Laenderliste (Hauptquelle). Kostenlos, verlangt
+//     aber seit Kurzem einen Zugangstoken (UCDP_ACCESS_TOKEN, siehe unten);
+//     ohne ihn laeuft F6 auf der festen Liste aus geo-countries.js weiter
 //   - GDELT: Nachrichtenvolumen zu Konflikt-Schlagwoertern je Beobachtungsland
 //     (mehrere Aufrufe, gestaffelt in Wellen mit hartem Zeitbudget)
 //
-// WARUM UCDP JETZT DIE HAUPTQUELLE IST: Live-Diagnose auf der echten Netlify-
-// Instanz zeigte, dass ReliefWeb v2 einen VORAB REGISTRIERTEN Appnamen verlangt
-// (HTTP 403 "not using an approved appname") - ohne Registrierung durch den
-// Betreiber ist ReliefWeb also grundsaetzlich blockiert, unabhaengig von der
-// Anfrageform. UCDP ist eine offen zugaengliche akademische Quelle ohne
-// Zugangsbeschraenkung und passt inhaltlich besser (Konfliktdaten statt
-// allgemeiner Katastrophenmeldungen).
+// WARUM NUR NOCH UCDP UND GDELT: Frueher lief hier zusaetzlich ReliefWeb
+// (UN OCHA). Die Live-Diagnose auf der echten Netlify-Instanz zeigte, dass
+// ReliefWeb v2 einen VORAB REGISTRIERTEN Appnamen verlangt (HTTP 403 "not using
+// an approved appname"). Das ist eine externe Registrierung, die kein Code-Fix
+// umgehen kann - die Quelle war damit dauerhaft blockiert und wurde entfernt
+// statt als toter Codepfad mitgeschleppt zu werden. UCDP passt inhaltlich
+// ohnehin besser (Konfliktdaten statt allgemeiner Katastrophenmeldungen).
 //
 // Die APIs sind aus der Entwicklungsumgebung nicht erreichbar (Egress-Richtlinie
 // blockt CONNECT mit 403), deshalb wurden Versionsschema und Antwortformat aus
@@ -42,7 +42,6 @@ const CACHE = new Map(); const TTL = 20 * 60 * 1000; // 20 Min - Weltlage aender
 // Laender waere dauerhaft "nicht geprueft" geblieben. Ein Test rechnet das nach.
 const WAVE = 7;
 const PER_REQUEST_TIMEOUT = 2500; // GDELT je Land
-const RELIEFWEB_TIMEOUT = 3000;   // ReliefWeb-Sammelabruf (ein Aufruf fuer alle Laender)
 const UCDP_TIMEOUT = 2500;        // je einzelnem Versions-Versuch
 const UCDP_MIN_ATTEMPT_MS = 400;  // darunter lohnt kein weiterer Versuch mehr
 // Eigenes Teilbudget fuer die Versionssuche. Die Kandidatenliste ist bewusst
@@ -51,13 +50,13 @@ const UCDP_MIN_ATTEMPT_MS = 400;  // darunter lohnt kein weiterer Versuch mehr
 // Gesamtbudget aufbrauchen und GDELT gar nicht mehr zum Zug kommen lassen.
 const UCDP_BUDGET_MS = 2500;
 const UCDP_ANNAHME_MS_JE_VERSUCH = 350; // Erfahrungswert fuer ein 404, nur fuer die Budget-Pruefung im Test
-// Deckt ReliefWeb UND alle GDELT-Wellen ZUSAMMEN ab, mit Sicherheitsabstand
-// unter Netlifys 10s-Standardlimit fuer synchrone Functions. Vorher wurde die
-// Frist erst NACH dem ReliefWeb-Aufruf gesetzt - dadurch konnte die Gesamtlaufzeit
-// (bis zu RELIEFWEB_TIMEOUT + das alte GDELT-Budget) das Funktionslimit reissen,
-// Netlify hat die Function dann hart abgebrochen und der Client sah nur einen
-// generischen Fetch-Fehler ("ReliefWeb nie erreichbar" wirkte wie ein API-Ausfall,
-// war aber ein serverseitiges Timeout).
+// Deckt die UCDP-Versionssuche UND alle GDELT-Wellen ZUSAMMEN ab, mit
+// Sicherheitsabstand unter Netlifys 10s-Standardlimit fuer synchrone Functions.
+// Die Frist laeuft ab Funktionsstart, nicht erst ab der ersten Quelle: sonst
+// koennte die Summe aus Quellenabruf und GDELT-Budget das Funktionslimit
+// reissen, Netlify braeche die Function hart ab und der Client saehe nur einen
+// generischen Fetch-Fehler - was wie ein API-Ausfall aussieht, aber ein
+// serverseitiges Timeout ist.
 const FUNCTION_BUDGET_MS = 8500;
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
@@ -211,8 +210,7 @@ let UCDP_LAST_GOOD_URL = null;
 // Zugehoerigkeit und Verwendungszweck.
 //
 // Ohne Token wird UCDP gar nicht erst angefragt. Ein garantierter 401 kostet
-// nur Zeit aus dem knappen Budget, die GDELT fuer die Laenderabfragen braucht -
-// dieselbe Lehre wie bei ReliefWebs Appname-Sperre.
+// nur Zeit aus dem knappen Budget, die GDELT fuer die Laenderabfragen braucht.
 const UCDP_TOKEN = process.env.UCDP_ACCESS_TOKEN || "";
 
 async function fetchUcdp(deadline) {
@@ -280,117 +278,6 @@ async function fetchUcdp(deadline) {
     }
   }
   throw new Error(attempts.length ? attempts.join(" | ") : `keine der ${versuche} geprueften UCDP-Versionen existiert`);
-}
-
-// --- ReliefWeb: aktuelle Krisen je Land (ein Aufruf, appname statt Key) -----
-async function fetchReliefWebOnce(url) {
-  const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } }, RELIEFWEB_TIMEOUT);
-  if (!res.ok) {
-    // Den Antwortkoerper mitnehmen: ReliefWeb schickt bei 4xx eine konkrete
-    // Begruendung ("Invalid value ... for filter[value]" o.ae.). Ohne die stand
-    // im UI nur "ReliefWeb HTTP 400" - was nicht sagt, WAS falsch ist.
-    let detail = "";
-    try { detail = (await res.text()).slice(0, 200).replace(/\s+/g, " ").trim(); } catch (_) {}
-    const err = new Error(`ReliefWeb HTTP ${res.status}${detail ? " – " + detail : ""}`);
-    err.status = res.status;
-    throw err;
-  }
-  const json = await res.json();
-  // v1 liefert {data:[...]}. Sollte v2 den Umschlag anders benennen, hier die
-  // gaengigen Varianten mitnehmen, statt stillschweigend eine leere Liste
-  // zurueckzugeben (was wie "keine Krisen weltweit" ausgesehen haette).
-  if (Array.isArray(json && json.data)) return json.data;
-  if (Array.isArray(json && json.results)) return json.results;
-  if (Array.isArray(json && json.items)) return json.items;
-  if (Array.isArray(json)) return json;
-  throw new Error("ReliefWeb: unerwartetes Antwortformat, Schlüssel: " + (json && typeof json === "object" ? Object.keys(json).slice(0, 8).join(",") : typeof json));
-}
-
-function parseReliefWebItems(items) {
-  // Pro Land die juengste Meldung behalten (Ergebnis ist bereits nach Datum sortiert)
-  const byCountry = new Map();
-  for (const item of items) {
-    try {
-      // v1 verpackt die Nutzdaten in item.fields. Falls v2 sie flach liefert,
-      // faellt das hier auf item selbst zurueck - so funktioniert derselbe
-      // Parser fuer beide Antwortformen.
-      const f = item.fields || item || {};
-      // country kann Objekt oder Array sein - beides zulassen.
-      const rawCountry = f.country;
-      const countries = Array.isArray(rawCountry) ? rawCountry : (rawCountry ? [rawCountry] : []);
-      const country = countries.find((c) => c && c.iso3) || countries[0];
-      if (!country || !country.iso3) continue;
-      const iso3 = String(country.iso3).toUpperCase();
-      if (byCountry.has(iso3)) continue; // erste (=juengste) Meldung je Land behalten
-      const rawType = f.type;
-      const types = Array.isArray(rawType) ? rawType : (rawType ? [rawType] : []);
-      const typeName = types[0] ? (types[0].name || null) : null;
-      const created = f.date && (f.date.created || f.date.changed);
-      byCountry.set(iso3, {
-        iso3, iso2: country.iso2 ? String(country.iso2).toUpperCase() : null, name: country.name || iso3,
-        reliefwebActive: true, reliefwebType: typeName, reliefwebHeadline: f.name || null,
-        reliefwebDate: created ? String(created).slice(0, 10) : null,
-      });
-    } catch (_) { /* einzelnen kaputten Eintrag ueberspringen, Rest verarbeiten */ }
-  }
-  return byCountry;
-}
-
-// API-VERSION: v1 ist abgeschaltet.
-// Live-Beleg aus dem Diagnose-Endpunkt auf der echten Netlify-Instanz:
-//   HTTP 410 – {"error":{"type":"Exception","message":"The API version 'v1' has
-//   been decommissioned. Please use version 'v2' instead."}}
-// Deshalb v2 als Hauptpfad. v1 wird NICHT mehr angefragt - ein 410 ist endgueltig
-// und ein weiterer Versuch waere reine Zeitverschwendung.
-// Live-Beleg aus dem Diagnose-Endpunkt: "country.iso2" wurde mit HTTP 400
-// "Unrecognized field 'country.iso2' in parameter 'fields'" abgelehnt - dieses
-// Feld gibt es im ReliefWeb-v2-Schema nicht (nur country.iso3). War der Grund,
-// warum sowohl der gefilterte als auch der ungefilterte Pfad scheiterten -
-// beide enthielten dasselbe ungueltige Feld.
-const RELIEFWEB_FIELDS =
-  "&fields[include][]=name&fields[include][]=date.created&fields[include][]=type.name"
-  + "&fields[include][]=country.iso3&fields[include][]=country.name";
-// Live-Beleg: die feldlose Rueckfallebene (RELIEFWEB_MINIMAL) lieferte HTTP 403
-// "You are not using an approved appname. Kindly request an approved appname
-// here: https://apidoc.reliefweb.int/apidoc" - ReliefWeb v2 verlangt inzwischen
-// einen VORAB REGISTRIERTEN Appnamen (anders als v1, wo ein beliebiger String
-// genuegte). Das ist kein Fehler in unserer Anfrageform, sondern eine externe
-// Registrierung, die kein Code-Fix umgehen kann. Ueber Umgebungsvariable
-// konfigurierbar, damit ein spaeter genehmigter Appname per Netlify-Env ohne
-// Redeploy eingetragen werden kann.
-const RELIEFWEB_APPNAME = process.env.RELIEFWEB_APPNAME || "terminal-app-geopolitics";
-const RELIEFWEB_BASE = "https://api.reliefweb.int/v2/disasters"
-  + "?appname=" + encodeURIComponent(RELIEFWEB_APPNAME)
-  + RELIEFWEB_FIELDS
-  + "&sort[]=date.created:desc&limit=100";
-// Statuswerte des disasters-Endpunkts: "alert", "ongoing", "past".
-const RELIEFWEB_FILTERED = RELIEFWEB_BASE + "&filter[field]=status&filter[value][]=alert&filter[value][]=ongoing";
-// Ohne fields[include]: falls v2 die Feldauswahl anders benennt, liefert die
-// nackte Abfrage immer noch verwertbare Datensaetze (nur groesser).
-const RELIEFWEB_MINIMAL = "https://api.reliefweb.int/v2/disasters?appname=" + encodeURIComponent(RELIEFWEB_APPNAME) + "&limit=100";
-
-async function fetchReliefWeb() {
-  const attempts = [];
-  // Reihenfolge: praezise gefiltert -> ungefiltert -> ohne Feldauswahl.
-  // Jede Stufe ist etwas schlechter als die vorige, aber jede ist deutlich
-  // besser als gar keine ReliefWeb-Daten.
-  for (const url of [RELIEFWEB_FILTERED, RELIEFWEB_BASE, RELIEFWEB_MINIMAL]) {
-    try {
-      return parseReliefWebItems(await fetchReliefWebOnce(url));
-    } catch (e) {
-      attempts.push(String((e && e.message) || e));
-      // Nur bei Problemen mit der ANFRAGEFORM lohnt eine andere Abfrageform.
-      // Ausdruecklich NICHT bei:
-      //   410 - Version endgueltig abgeschaltet: gilt fuer jede Abfrageform
-      //         derselben Version, ein weiterer Versuch ist reine Zeitverschwendung
-      //   401/403 - Berechtigung fehlt: aendert sich durch andere Parameter nicht
-      //   Timeouts/5xx - Gegenstelle ist das Problem, nicht die Anfrage
-      const s = e && e.status;
-      const retryable = s === 400 || s === 404 || s === 422;
-      if (!retryable) break;
-    }
-  }
-  throw new Error(attempts.join(" | "));
 }
 
 // --- GDELT: Nachrichtenvolumen zu Konflikt-Schlagwoertern je Land ----------
@@ -499,29 +386,10 @@ async function buildReport() {
   const ucdpDeadline = Math.min(deadline, Date.now() + UCDP_BUDGET_MS);
   try { ucdpByCountry = await fetchUcdp(ucdpDeadline); } catch (e) { ucdpError = String(e && e.message || e); }
 
-  // ReliefWeb v2 verlangt einen VORAB REGISTRIERTEN Appnamen (Live-Beleg:
-  // HTTP 403 "not using an approved appname") - ohne einen ist jeder Versuch
-  // ein garantierter Fehlschlag, der nur Zeit aus dem knappen Gesamtbudget
-  // nimmt. Deshalb standardmaessig uebersprungen; sobald RELIEFWEB_APPNAME
-  // gesetzt ist (nach Registrierung unter https://apidoc.reliefweb.int/apidoc),
-  // wird ReliefWeb wieder als Zusatzquelle mitgenutzt.
-  let rwByCountry = new Map(); let rwError = null;
-  if (process.env.RELIEFWEB_APPNAME) {
-    try { rwByCountry = await fetchReliefWeb(); } catch (e) { rwError = String(e && e.message || e); }
-  } else {
-    rwError = "übersprungen: kein genehmigter Appname konfiguriert (RELIEFWEB_APPNAME) – Registrierung: https://apidoc.reliefweb.int/apidoc";
-  }
-
-  // Beide dynamischen Quellen zu einer Laenderliste kombinieren. UCDP zuerst
-  // (Konflikt-Hauptquelle), ReliefWeb ergaenzt bekannte Laender um seine
-  // Zusatzinfo (Schlagzeile) und fuegt Laender hinzu, die UCDP nicht kennt.
+  // UCDP ist die einzige dynamische Quelle: was es meldet, ergaenzt die feste
+  // Beobachtungsliste. Faellt es aus (kein Token, Ausfall), bleibt die feste
+  // Liste - GDELT laeuft davon unabhaengig weiter.
   const dynamicCountries = new Map(ucdpByCountry);
-  for (const [iso3, c] of rwByCountry) {
-    const existing = dynamicCountries.get(iso3);
-    dynamicCountries.set(iso3, existing ? Object.assign({}, existing, {
-      reliefwebActive: true, reliefwebType: c.reliefwebType, reliefwebHeadline: c.reliefwebHeadline, reliefwebDate: c.reliefwebDate,
-    }) : c);
-  }
 
   const watchlist = buildWatchlist(Array.from(dynamicCountries.values()));
   const out = {};
@@ -543,27 +411,25 @@ async function buildReport() {
       const dyn = dynamicCountries.get(c.iso3) || null;
       // Trendverlauf nur fuer Laender, die eine offizielle Quelle als
       // Konfliktland fuehrt - siehe Begruendung bei fetchGdeltFor.
-      const mitTrend = !!(dyn && (dyn.ucdpActive || dyn.reliefwebActive));
+      const mitTrend = !!(dyn && dyn.ucdpActive);
       try { return { c, dyn, gdelt: await fetchGdeltFor(c, mitTrend) }; }
       catch (e) { return { c, dyn, gdelt: null, err: String(e && e.message || e) }; }
     }));
     for (const r of settled) out[r.c.iso3] = baseEntry(r.c, r.dyn, r.gdelt, r.err || null);
   }
 
-  return { countries: out, ucdpError, reliefwebError: rwError, generatedAt: new Date().toISOString() };
+  return { countries: out, ucdpError, generatedAt: new Date().toISOString() };
 }
 
 function baseEntry(c, dyn, gdelt, error) {
   const ucdpActive = !!(dyn && dyn.ucdpActive);
-  const reliefwebActive = !!(dyn && dyn.reliefwebActive);
   const gdeltCount = gdelt ? gdelt.count : 0;
   return {
     iso3: c.iso3, iso2: c.iso2 || (dyn && dyn.iso2) || null, name: c.name || (dyn && dyn.name) || c.iso3,
     flag: flagEmoji(c.iso2 || (dyn && dyn.iso2)),
-    level: gdelt === null && error ? "nicht geprüft" : computeLevel(gdeltCount, ucdpActive || reliefwebActive),
+    level: gdelt === null && error ? "nicht geprüft" : computeLevel(gdeltCount, ucdpActive),
     gdeltCount, headlines: gdelt ? gdelt.headlines : [], gdeltTrend: gdelt ? gdelt.trend : [],
     ucdpActive, ucdpType: dyn ? dyn.ucdpType : null, ucdpDate: dyn ? dyn.ucdpDate : null,
-    reliefwebActive, reliefwebType: dyn ? dyn.reliefwebType : null, reliefwebHeadline: dyn ? dyn.reliefwebHeadline : null, reliefwebDate: dyn ? dyn.reliefwebDate : null,
     error: error || null,
   };
 }
