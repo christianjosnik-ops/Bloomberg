@@ -34,7 +34,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(shaped.latest, 4.2);
     assert.strictEqual(shaped.chg, 0.2);
     assert.strictEqual(shaped.latestDate, "2026-06-01");
-    console.log("Block 1/22 (fromFredCsv: CSV korrekt geparst): OK");
+    console.log("Block 1/23 (fromFredCsv: CSV korrekt geparst): OK");
   }
 
   // --- fetchOne: Zeitbudget schon vor dem Aufruf erschoepft -> kein Netzwerkzugriff ---
@@ -47,7 +47,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const result = await fetchOne("UNRATE", null, deadline);
     assert.ok(result.error, "muss einen Fehler statt Daten liefern");
     assert.ok(!fetchCalled, "darf bei bereits abgelaufenem Budget gar nicht erst netzwerken");
-    console.log("Block 2/22 (fetchOne: erschoepftes Budget -> kein Netzwerkzugriff): OK");
+    console.log("Block 2/23 (fetchOne: erschoepftes Budget -> kein Netzwerkzugriff): OK");
   }
 
   // --- fetchOne: Provider-Timeouts werden auf die RESTZEIT gekappt, nicht die vollen Standardwerte ---
@@ -64,7 +64,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     console.log("  Dauer bei haengenden Providern und 0.9s Restbudget:", (dt / 1000).toFixed(2) + "s");
     assert.ok(dt < 1400, "Provider-Timeouts muessen auf die Restzeit gekappt werden, nicht auf die vollen 3s/2.5s-Standardwerte laufen");
     assert.ok(result.error, "muss trotzdem einen Fehler statt eines Haengers liefern");
-    console.log("Block 3/22 (fetchOne: Provider-Timeouts an Restbudget gekappt): OK");
+    console.log("Block 3/23 (fetchOne: Provider-Timeouts an Restbudget gekappt): OK");
   }
 
   // --- Handler: mehrere Serien/Wellen, alle Provider haengen -> Gesamtlaufzeit bleibt unter Netlifys Limit ---
@@ -83,7 +83,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const body = JSON.parse(res.body);
     const errors = Object.values(body).map((v) => v && v.error).filter(Boolean);
     assert.strictEqual(errors.length, 10, "alle 10 Serien muessen einen Fehler statt haengender Requests liefern");
-    console.log("Block 4/22 (Handler: Zeitbudget schuetzt ueber alle Wellen hinweg): OK");
+    console.log("Block 4/23 (Handler: Zeitbudget schuetzt ueber alle Wellen hinweg): OK");
   }
 
   // --- Handler: Batch-Cache-Treffer braucht kein Netzwerk ---
@@ -98,7 +98,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const second = await fred.handler({ httpMethod: "GET", queryStringParameters: { ids: "UNRATE" } });
     assert.strictEqual(calls, callsAfterFirst, "zweiter Aufruf innerhalb der TTL darf nicht erneut netzwerken");
     assert.strictEqual(JSON.parse(second.body).UNRATE.latest, 4.2);
-    console.log("Block 5/22 (Handler: Cache verhindert erneuten Netzwerkzugriff): OK");
+    console.log("Block 5/23 (Handler: Cache verhindert erneuten Netzwerkzugriff): OK");
   }
 
   // --- FRED antwortet mit HTML MIT Status 200 (Bot-Sperre) -> muss als solche benannt werden ---
@@ -113,7 +113,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     try { await fromFredCsv("UNRATE", 10, 3000); } catch (e) { msg = e.message; }
     assert.ok(msg && /HTML statt CSV/.test(msg), "eine Sperrseite mit Status 200 darf nicht als 'leeres Ergebnis' durchrutschen, sondern muss benannt werden");
     assert.ok(/Just a moment/.test(msg), "der Auszug der Sperrseite gehoert in die Meldung");
-    console.log("Block 6/22 (FRED: HTML-Sperrseite trotz Status 200 wird erkannt): OK");
+    console.log("Block 6/23 (FRED: HTML-Sperrseite trotz Status 200 wird erkannt): OK");
   }
 
   // --- FRED 4xx: der Antwortkoerper ist die eigentliche Begruendung ---
@@ -124,7 +124,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     let msg = null;
     try { await fromFredCsv("UNRATE", 10, 3000); } catch (e) { msg = e.message; }
     assert.ok(/403/.test(msg) && /Access denied/.test(msg), "Status UND Begruendung muessen in der Meldung stehen");
-    console.log("Block 7/22 (FRED: Fehlertext des Servers bleibt erhalten): OK");
+    console.log("Block 7/23 (FRED: Fehlertext des Servers bleibt erhalten): OK");
   }
 
   // --- CSV mit \r\n und fehlenden Werten (".") wird korrekt geparst ---
@@ -139,7 +139,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(shaped.series.length, 2, "die Zeile mit fehlendem Wert (.) muss uebersprungen werden");
     assert.strictEqual(shaped.latest, 4.2, "Windows-Zeilenenden duerfen den letzten Wert nicht verfaelschen");
     assert.strictEqual(shaped.chg, 0.2);
-    console.log("Block 8/22 (FRED: CRLF-Zeilenenden und fehlende Werte): OK");
+    console.log("Block 8/23 (FRED: CRLF-Zeilenenden und fehlende Werte): OK");
   }
 
   // --- Sammelabruf: mehrspaltiges CSV, fehlende Werte je Spalte ueberspringen ---
@@ -169,7 +169,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(out.GDP.latest, 29000.5);
     assert.strictEqual(out.GDP.series.length, 1, "fuer GDP darf nur die eine Zeile mit echtem Wert zaehlen, nicht die Punkte");
     assert.strictEqual(out.DGS10.latest, 4.3);
-    console.log("Block 9/22 (Sammelabruf: eine Anfrage, Spalten sauber getrennt): OK");
+    console.log("Block 9/23 (Sammelabruf: eine Anfrage, Spalten sauber getrennt): OK");
   }
 
   // --- Sammelabruf: Spaltenreihenfolge wird aus der Kopfzeile gelesen, nicht angenommen ---
@@ -184,7 +184,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const out = await fromFredCsvBatch(["UNRATE", "GDP"], 6000);
     assert.strictEqual(out.UNRATE.latest, 4.1, "die Zuordnung muss ueber die Kopfzeile laufen, nicht ueber die Anfragereihenfolge");
     assert.strictEqual(out.GDP.latest, 29100);
-    console.log("Block 10/22 (Sammelabruf: Zuordnung ueber die Kopfzeile): OK");
+    console.log("Block 10/23 (Sammelabruf: Zuordnung ueber die Kopfzeile): OK");
   }
 
   // --- Handler: EIN Sammelabruf JE FREQUENZGRUPPE deckt alle zehn Serien ab.
@@ -236,7 +236,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(Object.keys(body).length, 10);
     assert.ok(Object.values(body).every((v) => v && !v.error && v.latest != null), "alle zehn Serien muessen Daten haben");
     assert.strictEqual(body.UNRATE.source, "fred");
-    console.log(`Block 11/22 (Handler: ${urls.length} Sammelabrufe, je Frequenzgruppe einer, keine Mischung): OK`);
+    console.log(`Block 11/23 (Handler: ${urls.length} Sammelabrufe, je Frequenzgruppe einer, keine Mischung): OK`);
   }
 
   // --- Teilabdeckung: FRED laesst eine unbekannte ID stillschweigend aus der
@@ -281,7 +281,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     const texte = Object.values(body).map((v) => v.error || "").join(" ");
     assert.ok(/Sammelabruf/.test(texte), "der Grund des Sammel-Fehlschlags muss in der Meldung auftauchen, nicht nur der Einzelfehler");
     assert.ok(/403|Access denied/.test(texte), "Statuscode bzw. Servertext des Sammelabrufs muessen erhalten bleiben");
-    console.log("Block 12/22 (Handler: Grund des Sammel-Fehlschlags bleibt sichtbar): OK");
+    console.log("Block 12/23 (Handler: Grund des Sammel-Fehlschlags bleibt sichtbar): OK");
   }
 
   // --- Euro-Raum-Serien (ueber FRED gespiegelte Eurostat-/EZB-Reihen) laufen
@@ -320,7 +320,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
       assert.strictEqual(body[id].latest, wert[id], `letzter Wert von ${id} - eine Verwechslung zwischen den Gruppen faellt hier auf`);
       assert.strictEqual(body[id].source, "fred", "Quelle bleibt einheitlich 'fred', kein separater EZB-Provider noetig");
     });
-    console.log(`Block 13/22 (Euro-Serien: ${urls.length} Abrufe nach Frequenz, Werte korrekt zugeordnet): OK`);
+    console.log(`Block 13/23 (Euro-Serien: ${urls.length} Abrufe nach Frequenz, Werte korrekt zugeordnet): OK`);
   }
 
   // --- Eingestellte Serie: FRED liefert weiter HTTP 200 und gueltiges CSV,
@@ -354,7 +354,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
 
     const taeglich = shapeSeries("DGS10", [{ t: "2026-08-01", v: 4.1 }, { t: "2026-08-04", v: 4.2 }], jetzt);
     assert.strictEqual(taeglich.outdated, true, "eine Tagesserie mit 24 Tagen Luecke ist auffaellig");
-    console.log("Block 14/22 (eingestellte Serien werden erkannt, normaler Verzug nicht): OK");
+    console.log("Block 14/23 (eingestellte Serien werden erkannt, normaler Verzug nicht): OK");
   }
 
   // --- Kein Auseinanderlaufen zwischen Presets und Aktualitaetsschwellen:
@@ -386,7 +386,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(md.EURO_MACRO_PRESETS.length, 4);
     assert.ok(!md.MACRO_PRESETS.some((m) => m.id === "LRHUTTTTEZM156S"),
       "die eingestellte OECD-Arbeitslosenserie darf nicht zurueckkehren - sie endet im Januar 2023");
-    console.log("Block 15/22 (jede Makro-Kachel hat gepflegte Aktualitaetsschwelle und Frequenz): OK");
+    console.log("Block 15/23 (jede Makro-Kachel hat gepflegte Aktualitaetsschwelle und Frequenz): OK");
   }
 
   // --- Ueberzaehlige IDs werden benannt, nicht stillschweigend abgeschnitten ---
@@ -407,7 +407,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
       "die 21. Serie muss einen erklaerenden Eintrag bekommen statt wortlos zu fehlen");
     assert.ok(body.SERIE21 && body.SERIE21.error, "ebenso die 22.");
     assert.ok(body.SERIE0 && !body.SERIE0.error, "die ersten 20 muessen normal geliefert werden");
-    console.log("Block 16/22 (ueberzaehlige Serien werden benannt statt still abgeschnitten): OK");
+    console.log("Block 16/23 (ueberzaehlige Serien werden benannt statt still abgeschnitten): OK");
   }
 
   // --- Offizielle FRED-API als bevorzugter Weg, wenn ein Schluessel vorliegt.
@@ -442,7 +442,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     assert.strictEqual(body.UNRATE.series.length, 2, 'Beobachtungen mit "." muessen uebersprungen werden');
     assert.strictEqual(body.UNRATE.source, "fred-api", "die Herkunft muss unterscheidbar bleiben");
     assert.ok(body.GDP && !body.GDP.error, "auch die zweite Serie muss kommen - die API kennt keinen Sammelabruf, also je Serie eine Anfrage");
-    console.log("Block 17/22 (mit FRED_API_KEY laeuft alles ueber die offizielle API): OK");
+    console.log("Block 17/23 (mit FRED_API_KEY laeuft alles ueber die offizielle API): OK");
   }
 
   // --- Der Schluessel gehoert in den Authorization-Header, nicht in die URL.
@@ -464,7 +464,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
       "der Schluessel muss im Authorization-Header stehen - so verlangt es die FRED-API v2");
     assert.ok(!gesehen[0].url.includes("geheim123"),
       "und NICHT in der URL: dort landete er in Logs, Referrern und in unseren eigenen Fehlermeldungen");
-    console.log("Block 18/22 (Schluessel im Authorization-Header, nicht in der URL): OK");
+    console.log("Block 18/23 (Schluessel im Authorization-Header, nicht in der URL): OK");
   }
 
   // --- Ohne Schluessel ist der Fehlschlag seit November 2025 der Normalfall.
@@ -485,7 +485,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
       "die Meldung muss die noetige Umgebungsvariable benennen: " + body.UNRATE.error);
     assert.ok(/fredaccount\.stlouisfed\.org\/apikey/.test(body.UNRATE.error),
       "und den Weg zum kostenlosen Schluessel nennen - sonst weiss niemand, wie er F4 wieder zum Laufen bringt");
-    console.log("Block 19/22 (ohne Schluessel nennt die Meldung Ursache und Abhilfe): OK");
+    console.log("Block 19/23 (ohne Schluessel nennt die Meldung Ursache und Abhilfe): OK");
   }
 
   // --- Schluessel aus dem Browser (Startbildschirm, wie der Finnhub-Key).
@@ -515,7 +515,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
       "der gereichte Schluessel muss tatsaechlich an FRED gehen");
     assert.ok(!gesehen[0].url.includes("ausdembrowser999"),
       "und auch dieser Weg darf ihn nicht in die URL schreiben");
-    console.log("Block 20/22 (Schluessel aus dem Browser per X-FRED-Key-Header): OK");
+    console.log("Block 20/23 (Schluessel aus dem Browser per X-FRED-Key-Header): OK");
   }
 
   // --- Vorrang: was der Browser schickt, schlaegt die Umgebungsvariable.
@@ -543,7 +543,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
     delete process.env.FRED_API_KEY;
     assert.strictEqual(gesehen[0].headers["Authorization"], "Bearer ausdembrowser999",
       "der Browser-Schluessel muss die Umgebungsvariable ueberstimmen, unabhaengig von der Schreibweise des Headers");
-    console.log("Block 21/22 (Browser-Schluessel schlaegt Umgebungsvariable, Schreibweise egal): OK");
+    console.log("Block 21/23 (Browser-Schluessel schlaegt Umgebungsvariable, Schreibweise egal): OK");
   }
 
   // --- Mit Schluessel darf der tote fredgraph-Weg gar nicht mehr angefasst
@@ -578,7 +578,53 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
       "die Serie, die die API liefert, muss trotz des Fehlschlags der anderen ankommen");
     assert.ok(body.GDP && body.GDP.error,
       "und die gescheiterte Serie braucht einen echten Grund statt stillem Fehlen");
-    console.log("Block 22/22 (mit Schluessel wird der tote fredgraph-Weg nicht mehr angefasst): OK");
+    console.log("Block 22/23 (mit Schluessel wird der tote fredgraph-Weg nicht mehr angefasst): OK");
+  }
+
+  // --- Einheiten der Makro-Kacheln. Aufgefallen im Livebetrieb: Euro-BIP
+  //     zeigte 2.896.651,9 mit dem Etikett "Mrd €" - das Tausendfache der
+  //     Wirklichkeit, weil Eurostat die Reihe in MILLIONEN Euro fuehrt. Und
+  //     zwar direkt neben dem US-BIP, das FRED wirklich in Milliarden liefert:
+  //     ein Zahlenvergleich der beiden Kacheln war damit sinnlos.
+  //
+  //     Der Test prueft nicht die eine Zeile, sondern die Groessenordnung
+  //     jeder Geldkachel gegen einen bekannten Erwartungswert. So faellt auch
+  //     die naechste Reihe auf, die in einer anderen Einheit kommt als ihr
+  //     Etikett behauptet - das laesst sich einer FRED-ID nicht ansehen. ---
+  {
+    const md = require("./market-data.js");
+    const alle = Object.fromEntries(md.MACRO_PRESETS.map((m) => [m.id, m]));
+
+    // Grob erwartete Groessenordnung nach Skalierung, in der Einheit des
+    // Etiketts. Absichtlich weite Spannen: geprueft wird die EINHEIT, nicht
+    // die Konjunktur.
+    const erwartet = [
+      { id: "GDP", roh: 32486.066, min: 10000, max: 99000 },      // Mrd $
+      { id: "M2SL", roh: 23218, min: 5000, max: 99000 },          // Mrd $
+      { id: "PAYEMS", roh: 158858, min: 100000, max: 300000 },    // Tsd Personen
+      { id: "CLVMEURSCAB1GQEA19", roh: 2896651.9, min: 1000, max: 9000 }, // Mrd €
+    ];
+
+    for (const e of erwartet) {
+      const preset = alle[e.id];
+      assert.ok(preset, `Preset ${e.id} fehlt`);
+      const gezeigt = md.skaliereMakro(e.roh, preset.scale);
+      assert.ok(gezeigt >= e.min && gezeigt <= e.max,
+        `${preset.label}: aus dem Rohwert ${e.roh} wird angezeigt ${gezeigt} ${preset.unit} - das liegt ausserhalb der erwarteten Groessenordnung ${e.min}–${e.max}. Stimmt die Einheit der FRED-Reihe noch mit dem Etikett ueberein?`);
+    }
+
+    // Die beiden BIP-Kacheln stehen nebeneinander und muessen vergleichbar
+    // sein - genau das war der eigentliche Schaden.
+    const usBip = md.skaliereMakro(32486.066, alle["GDP"].scale);
+    const euBip = md.skaliereMakro(2896651.9, alle["CLVMEURSCAB1GQEA19"].scale);
+    assert.ok(usBip / euBip > 2 && usBip / euBip < 20,
+      `US-BIP (${usBip}) und Euro-BIP (${euBip}) muessen in derselben Groessenordnung stehen - vorher lag Faktor 1000 dazwischen`);
+
+    // Ohne scale muss der Wert unveraendert durchgehen, sonst wuerde die
+    // Umrechnung stillschweigend auf alle anderen Kacheln durchschlagen.
+    assert.strictEqual(md.skaliereMakro(4.1, undefined), 4.1);
+    assert.strictEqual(md.skaliereMakro(null, 1e-3), null, "fehlende Werte duerfen nicht zu 0 werden");
+    console.log("Block 23/23 (Einheiten der Geldkacheln stimmen mit ihrem Etikett ueberein): OK");
   }
 
   console.log("\nAlle fred.js-Tests erfolgreich.");

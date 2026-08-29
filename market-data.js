@@ -55,8 +55,28 @@
     { id: "ECBDFR", label: "EZB-Einlagensatz", unit: "%" },
     { id: "CP0000EZ19M086NEST", label: "Euro-Verbraucherpreise (HVPI)", unit: "Index" },
     { id: "IRLTLT01DEM156N", label: "Bund-Rendite 10J", unit: "%" },
-    { id: "CLVMEURSCAB1GQEA19", label: "Euro-BIP (real)", unit: "Mrd €" },
+    // ACHTUNG Einheit: Eurostat liefert diese Reihe in MILLIONEN Euro
+    // ("Millions of Chained 2010 Euros"), nicht in Milliarden. Ohne die
+    // Skalierung stand hier 2.896.651,9 mit dem Etikett "Mrd €" - also das
+    // Tausendfache der Wirklichkeit, und zwar direkt neben dem US-BIP, das
+    // FRED tatsaechlich in Milliarden liefert. Ein Zahlenvergleich der beiden
+    // Kacheln war damit sinnlos.
+    { id: "CLVMEURSCAB1GQEA19", label: "Euro-BIP (real)", unit: "Mrd €", scale: 1e-3 },
   ];
+
+  // Einheitenumrechnung fuer die Anzeige. Bewusst NUR hier und nicht schon in
+  // der Function: die liefert die Reihe so, wie FRED sie fuehrt - wer die Roh-
+  // antwort ansieht, soll dieselben Zahlen sehen wie bei FRED. Die Umrechnung
+  // ist eine Frage der Darstellung, nicht der Daten.
+  //
+  // Rundung auf drei Nachkommastellen, wie die Function es fuer die Rohwerte
+  // auch tut; ohne sie erzeugt die Multiplikation Fliesskomma-Schwaenze
+  // (2896.6518999999998).
+  function skaliereMakro(wert, scale) {
+    if (wert == null || typeof wert !== "number" || !isFinite(wert)) return wert;
+    if (!scale || scale === 1) return wert;
+    return Math.round(wert * scale * 1000) / 1000;
+  }
   const MACRO_PRESETS = [...US_MACRO_PRESETS, ...EURO_MACRO_PRESETS];
   const INDEX_PRESETS = [
     { s: "SPX", y: "^GSPC", label: "S&P 500" }, { s: "NDX", y: "^IXIC", label: "Nasdaq" },
@@ -250,7 +270,7 @@
   return {
     EU_PRESETS, ASIA_PRESETS, MACRO_PRESETS, US_MACRO_PRESETS, EURO_MACRO_PRESETS, INDEX_PRESETS, US_UNIVERSE, US_NAME, SECTORS,
     FH, TD, YF, FRED_FN,
-    jget, jgetTimeout, keyOf, fredGetBatch,
+    jget, jgetTimeout, keyOf, fredGetBatch, skaliereMakro,
     fhQuote, tdQuote, tdSeries, yfGet, searchSymbol, localPresetMatch, resolveSymbol,
     CHART_RANGES, getChart, getQuoteLite, getDetail, askGroq,
   };

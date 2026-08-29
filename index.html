@@ -376,7 +376,7 @@ const { sma, rsi } = Indicators;
 const {
   EU_PRESETS, ASIA_PRESETS, MACRO_PRESETS, US_MACRO_PRESETS, EURO_MACRO_PRESETS, INDEX_PRESETS, US_UNIVERSE, US_NAME, SECTORS,
   FH, TD, YF, FRED_FN,
-  jget, jgetTimeout, keyOf, fredGetBatch,
+  jget, jgetTimeout, keyOf, fredGetBatch, skaliereMakro,
   fhQuote, tdQuote, tdSeries, yfGet, searchSymbol, localPresetMatch, resolveSymbol,
   CHART_RANGES, getChart, getQuoteLite, getDetail, askGroq,
 } = MarketData;
@@ -762,6 +762,11 @@ function MacroGroup({ title, presets, macro, macroBusy }) {
       <div className="grid-auto">
         {presets.map((m) => {
           const d = macro[m.id]; const dUp = (d?.chg ?? 0) >= 0;
+          // Wert UND Veraenderung muessen dieselbe Skalierung bekommen - sonst
+          // stuende neben einem Wert in Milliarden eine Veraenderung in
+          // Millionen, was schlimmer waere als die falsche Einheit vorher.
+          const wert = skaliereMakro(d?.latest, m.scale);
+          const chg = skaliereMakro(d?.chg, m.scale);
           return (
             <Panel key={m.id} title={m.label}>
               {!d && <div className="muted">{macroBusy ? "lädt…" : "—"}</div>}
@@ -771,8 +776,8 @@ function MacroGroup({ title, presets, macro, macroBusy }) {
                   {/* Bei einer ueberfaelligen Serie stimmt der Wert zwar, ist aber
                       Monate bis Jahre alt. Er wird deshalb gedaempft dargestellt,
                       damit er nicht wie ein frischer Kurs wirkt. */}
-                  <span style={{ fontSize: "var(--fs-xl)", fontWeight: 700, color: d.outdated ? C.muted : C.white }}>{d.latest ?? "—"} <span className="muted" style={{ fontWeight: 400 }}>{m.unit}</span></span>
-                  {d.chg != null && <span style={{ fontSize: "var(--fs-sm)", color: dUp ? C.green : C.red }}>{dUp ? "+" : ""}{d.chg}</span>}
+                  <span style={{ fontSize: "var(--fs-xl)", fontWeight: 700, color: d.outdated ? C.muted : C.white }}>{wert ?? "—"} <span className="muted" style={{ fontWeight: 400 }}>{m.unit}</span></span>
+                  {chg != null && <span style={{ fontSize: "var(--fs-sm)", color: dUp ? C.green : C.red }}>{dUp ? "+" : ""}{chg}</span>}
                 </div>
                 {d.outdated && (
                   <div className="note note--warn" style={{ marginBottom: 6, fontSize: "var(--fs-2xs)" }}>
