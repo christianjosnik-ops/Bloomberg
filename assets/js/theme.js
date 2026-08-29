@@ -1,7 +1,7 @@
 // theme.js — Farbschema, Formatierungs-Helfer und Anzeige-Metadaten. Reine
 // Konstanten/Funktionen, kein Fetch, kein DOM, keine JSX. Dual-Export wie
 // ratios.js/peers.js: laeuft unveraendert in Node (Tests) und im Browser
-// (<script src="theme.js">, ohne Babel - dieser Code enthaelt kein JSX und
+// (<script src="assets/js/theme.js">, ohne Babel - dieser Code enthaelt kein JSX und
 // braucht daher keine Transpilierung).
 //
 // Ausgelagert aus index.html, um die Menge an JSX-Code zu verkleinern, die

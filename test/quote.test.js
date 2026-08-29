@@ -1,5 +1,5 @@
 // quote.test.js — Tests fuer die Kurs-Function, Schwerpunkt Tagesveraenderung.
-//   node quote.test.js
+//   node test/quote.test.js
 //
 // Anlass: Im Laufband standen Werte wie "S&P 500 +11.91%" und "Nasdaq +15.89%".
 // Das sind keine Tagesveraenderungen, sondern Halbjahres-Veraenderungen - die
@@ -7,7 +7,7 @@
 // Zeitraum, Standard 6mo) statt meta.previousClose (Vortagesschluss) benutzt.
 
 const assert = require("assert");
-const path = "/home/user/Bloomberg/netlify/functions/quote.js";
+const path = require.resolve("../netlify/functions/quote.js");
 function fresh() { delete require.cache[require.resolve(path)]; return require(path); }
 
 // Baut eine Yahoo-Chart-Antwort nach: Kurs 110, Vortagesschluss 109 (= +0.92%),

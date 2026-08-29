@@ -1,11 +1,11 @@
 // diag.test.js — Tests fuer den Diagnose-Endpunkt.
-//   node diag.test.js
+//   node test/diag.test.js
 // Der Endpunkt existiert, um echte Ausfaelle sichtbar zu machen - er muss also
 // selbst dann noch ein brauchbares Ergebnis liefern, wenn die Gegenstelle
 // abstuerzt, haengt oder Muell zurueckgibt. Genau das wird hier geprueft.
 
 const assert = require("assert");
-const path = "/home/user/Bloomberg/netlify/functions/diag.js";
+const path = require.resolve("../netlify/functions/diag.js");
 function fresh() { delete require.cache[require.resolve(path)]; return require(path); }
 
 (async function run() {
@@ -139,7 +139,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
   //     Werte von 2023, die im UI wie frische Daten aussahen. ---
   {
     const { PROBES } = fresh()._internal;
-    const fredIntern = require("/home/user/Bloomberg/netlify/functions/fred.js")._internal;
+    const fredIntern = require("../netlify/functions/fred.js")._internal;
     const sammelProben = PROBES.filter((x) => x.key.startsWith("fred-sammel-"));
     assert.ok(sammelProben.length >= 3, "es muss je Frequenzgruppe eine Sammelprobe geben, gefunden: " + sammelProben.length);
 

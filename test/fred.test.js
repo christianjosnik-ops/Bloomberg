@@ -1,5 +1,5 @@
 // fred.test.js — Unit-Tests fuer die Makrodaten-Function (F4 MAKRO).
-// Kein Test-Framework, nur Node + assert:  node fred.test.js
+// Kein Test-Framework, nur Node + assert:  node test/fred.test.js
 // Alle HTTP-Aufrufe hier sind gefakt - es geht um die Fallback-Kette und das
 // Zeitbudget, nicht um echte FRED-Antworten (dafuer fehlt in dieser Umgebung
 // der Netzwerkzugriff).
@@ -10,8 +10,8 @@
 // angepasst zu werden.
 
 const assert = require("assert");
-const path = "/home/user/Bloomberg/netlify/functions/fred.js";
-const providers = require("./netlify/functions/lib/providers.js");
+const path = require.resolve("../netlify/functions/fred.js");
+const providers = require("../netlify/functions/lib/providers.js");
 
 function freshHandler() { delete require.cache[require.resolve(path)]; return require(path); }
 
@@ -291,7 +291,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
   //     laengst nicht mehr abfragt (genau das war hier schon einmal der Fall). ---
   {
     providers._resetBreakers();
-    const md = require("./market-data.js");
+    const md = require("../assets/js/market-data.js");
     const euroIds = md.EURO_MACRO_PRESETS.map((m) => m.id);
     // Je Serie ein eigener Wert, damit eine Vertauschung auffiele.
     const wert = { ECBDFR: 3.75, CP0000EZ19M086NEST: 132.4, IRLTLT01DEM156N: 2.48, CLVMEURSCAB1GQEA19: 3010 };
@@ -363,7 +363,7 @@ function freshHandler() { delete require.cache[require.resolve(path)]; return re
   //     durchrutschen, fuer die die Pruefung gedacht ist. ---
   {
     const { MAX_AGE_DAYS, MAX_AGE_FALLBACK_DAYS } = freshHandler()._internal;
-    const md = require("./market-data.js");
+    const md = require("../assets/js/market-data.js");
     const fehlend = md.MACRO_PRESETS.map((m) => m.id).filter((id) => MAX_AGE_DAYS[id] == null);
     assert.deepStrictEqual(fehlend, [],
       "fuer diese Makro-Serien fehlt eine Aktualitaetsschwelle in fred.js (sie liefen sonst still in die " + MAX_AGE_FALLBACK_DAYS + "-Tage-Rueckfallschwelle): " + fehlend.join(", "));

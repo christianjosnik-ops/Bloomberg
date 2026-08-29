@@ -1,0 +1,20 @@
+# Abhaengigkeiten (das Projekt hat bewusst keine, aber lokale Experimente
+# mit npm sollen nicht versehentlich im Repo landen)
+node_modules/
+
+# Netlify: lokaler Build-/Dev-Zustand
+.netlify/
+
+# Umgebungsvariablen - hier stehen API-Schluessel drin, niemals einchecken
+.env
+.env.*
+
+# Logs
+*.log
+
+# Betriebssystem-/Editor-Krempel
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

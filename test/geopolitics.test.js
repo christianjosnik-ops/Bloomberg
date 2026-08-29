@@ -1,5 +1,5 @@
 // geopolitics.test.js — Unit-Tests fuer die Weltlage-Function.
-// Kein Test-Framework, nur Node + assert:  node geopolitics.test.js
+// Kein Test-Framework, nur Node + assert:  node test/geopolitics.test.js
 // Alle HTTP-Aufrufe hier sind gefakt - es geht um die Aggregations-, Level-
 // und Zeitbudget-Logik, nicht um echte GDELT-/UCDP-/ReliefWeb-Antworten.
 //
@@ -12,7 +12,7 @@
 // buildReport auf eine unerwartete URL).
 
 const assert = require("assert");
-const path = "/home/user/Bloomberg/netlify/functions/geopolitics.js";
+const path = require.resolve("../netlify/functions/geopolitics.js");
 
 // Sauberer Ausgangszustand je Block. UCDP braucht seit der Token-Pflicht
 // (Live-Beleg: HTTP 401 "API token required") einen Zugangstoken, sonst wird
@@ -97,7 +97,7 @@ function ucdpBody(events, envelope) {
     // Gegen die Liste selbst pruefen, nicht gegen eine abgeschriebene Zahl:
     // die feste Watchlist ist gewachsen, seit sie ohne UCDP-Token die einzige
     // Quelle der Laenderauswahl ist.
-    const { FIXED_WATCHLIST } = require("/home/user/Bloomberg/netlify/functions/lib/geo-countries.js");
+    const { FIXED_WATCHLIST } = require("../netlify/functions/lib/geo-countries.js");
     assert.strictEqual(Object.keys(report.countries).length, FIXED_WATCHLIST.length,
       "genau die feste Watchlist, keine dynamischen dazu");
     assert.ok(/übersprungen/.test(report.reliefwebError), "ohne RELIEFWEB_APPNAME muss ReliefWeb als uebersprungen gemeldet werden, nicht als Fehlschlag");
@@ -507,7 +507,7 @@ function ucdpBody(events, envelope) {
     // seit der Token-Pflicht der Normalfall, und in ihm MUSS die komplette
     // Beobachtungsliste durchlaufen werden koennen. Sonst blieben Laender
     // dauerhaft "nicht geprueft", ohne dass jemand den Grund saehe.
-    const { FIXED_WATCHLIST, MAX_WATCHLIST } = require("/home/user/Bloomberg/netlify/functions/lib/geo-countries.js");
+    const { FIXED_WATCHLIST, MAX_WATCHLIST } = require("../netlify/functions/lib/geo-countries.js");
     const laender = Math.min(FIXED_WATCHLIST.length, MAX_WATCHLIST);
     const wellen = Math.ceil(laender / WAVE);
     const gdeltKosten = wellen * PER_REQUEST_TIMEOUT;

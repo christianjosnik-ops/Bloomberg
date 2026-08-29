@@ -1,7 +1,7 @@
 // ratios.js — reine Kennzahlen-Berechnung auf normalisierten Jahresabschluss-
 // Zeilen (Schema siehe netlify/functions/lib/normalizer.js). Kein Fetch, kein
 // DOM. Dual-Export: laeuft unveraendert in Node (ratios.test.js, spaeter auch
-// im Zinssensitivitaets-Modul) UND im Browser (<script src="ratios.js">, ohne
+// im Zinssensitivitaets-Modul) UND im Browser (<script src="assets/js/ratios.js">, ohne
 // Babel-Transpilierung - deshalb bewusst kein Optional Chaining/Nullish
 // Coalescing, nur breit unterstuetztes ES6).
 //
