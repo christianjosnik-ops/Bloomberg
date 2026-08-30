@@ -116,9 +116,8 @@ Ein DCF liefert immer genau eine Zahl und taeuscht damit eine Genauigkeit vor,
 die es nicht gibt: das Ergebnis haengt an Wachstum, Kapitalkosten und ewigem
 Wachstum, und kleine Verschiebungen dort bewegen den fairen Wert zweistellig.
 
-Im Marktreiter oeffnet der Knopf **◈ MONTE CARLO** (Kopfzeile des
-Kennzahlen-Panels) ein eigenes Fenster, das die Rechnung 4000 Mal mit zufaellig
-gezogenen Annahmen durchspielt. Jeder Durchlauf erscheint waehrend des Rechnens
+Der Reiter **F7 MONTE CARLO** spielt die Rechnung 4000 Mal mit zufaellig
+gezogenen Annahmen durch. Jeder Durchlauf erscheint waehrend des Rechnens
 als einzelner Punkt; die gestrichelte Linie ist der heutige Boersenwert.
 
 Die eigentliche Aussage steht unter dem Bild: **in wie viel Prozent der
@@ -133,6 +132,17 @@ Technisches:
   Finanzlogik: Free Cashflow kommt aus den Bilanzzeilen, `netDebt` aus
   `ratios.js`, der Boersenwert aus den Kursdaten (gleiche Arbeitsteilung wie
   `peers.js`).
+- **Woher der freie Cashflow kommt**, ist nicht selbstverstaendlich: Yahoo
+  liefert die Kapitalflussrechnung nicht fuer jeden Titel. `freeCashflow()`
+  arbeitet deshalb eine Kette ab und meldet mit, worauf das Ergebnis beruht -
+  der Reiter zeigt das an, damit eine Naeherung nicht wie der echte Cashflow
+  aussieht:
+  1. `ocf` - operativer Cashflow minus Investitionen (der echte freie Cashflow)
+  2. `fcff` - EBIT nach Steuern + Abschreibungen minus Investitionen
+     (Naeherung, mit ⚠ gekennzeichnet)
+  3. `hand` - von Hand eingetragen. Faellt beides aus, gibt es ein Eingabefeld
+     statt einer Sackgasse; es ueberschreibt auch sonst jederzeit den
+     Bilanzwert.
 - Eigener Zufallsgenerator mit **Startwert** statt `Math.random()`. Nur so sind
   die Tests reproduzierbar - und derselbe Startwert liefert denselben Lauf.
 - Gerechnet wird **stapelweise** ueber `requestAnimationFrame`, damit der

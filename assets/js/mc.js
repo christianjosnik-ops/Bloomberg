@@ -1,4 +1,4 @@
-// mc.js — Monte-Carlo-Simulation fuer die Bewertungs-Bandbreite (F7 MONTE CARLO).
+// mc.js — Monte-Carlo-Simulation fuer die Bewertungs-Bandbreite (Reiter F7).
 //
 // Kernidee: Ein DCF (abgezinster Cashflow) liefert IMMER genau eine Zahl - und
 // taeuscht damit eine Genauigkeit vor, die es nicht gibt. Das Ergebnis haengt an
@@ -200,6 +200,66 @@
     return count;
   }
 
+  // ---- Freier Cashflow: Rueckfallkette -------------------------------------
+  //
+  // WARUM EINE KETTE: Der operative Cashflow ist der sauberste Ausgangswert,
+  // kommt aber nicht bei jedem Wert an. Yahoo liefert die Kapitalflussrechnung
+  // nicht fuer jeden Titel und benennt ihre Felder nicht ueber alle
+  // API-Generationen gleich (siehe Warnung im Kopf von normalizer.js: die
+  // Feldnamen sind nicht live verifiziert). Ohne Rueckfallebene faellt die
+  // ganze Bewertung wegen EINES fehlenden Feldes aus.
+  //
+  // Reihenfolge, von genau nach grob. Jede Stufe meldet mit, WORAUF sie beruht -
+  // die Oberflaeche zeigt das an, damit eine Naeherung nicht wie der echte
+  // Cashflow aussieht:
+  //
+  //   1. "ocf"  operativer Cashflow - |Investitionen|
+  //             Der tatsaechliche freie Cashflow. Identische Rechnung wie
+  //             fcfMargin in ratios.js - bewusst mit Math.abs, damit ein
+  //             positiv geliefertes capex nicht faelschlich addiert wird.
+  //
+  //   2. "fcff" EBIT x (1 - Steuerquote) + Abschreibungen - |Investitionen|
+  //             Lehrbuch-Naeherung (Free Cashflow to Firm) ohne die
+  //             Veraenderung des Working Capital. Taugt als Ausgangswert,
+  //             ist aber eine Schaetzung - wird als solche gekennzeichnet.
+  //
+  // Beide brauchen capex. Ohne Investitionen gibt es keinen FREIEN Cashflow,
+  // nur einen Zufluss - dann liefert die Funktion null statt einer Zahl, die
+  // etwas anderes misst als ihr Name sagt.
+  function freeCashflow(row) {
+    if (!row || !isNum(row.capex)) return null;
+    var invest = Math.abs(row.capex);
+
+    if (isNum(row.operatingCashflow)) {
+      return {
+        wert: row.operatingCashflow - invest,
+        basis: "ocf",
+        label: "operativer Cashflow − Investitionen",
+        genau: true,
+      };
+    }
+
+    if (isNum(row.operatingIncome) && isNum(row.depreciationAmortization)) {
+      // Steuerquote aus der GuV, sonst 25%. Gedeckelt auf 0..60%: eine aus
+      // Sondereffekten entstandene Quote von 300% (oder eine negative bei
+      // Verlustjahren) wuerde den Ausgangswert sonst voellig entstellen.
+      var t = 0.25;
+      if (isNum(row.taxExpense) && isNum(row.pretaxIncome) && row.pretaxIncome > 0) {
+        var roh = row.taxExpense / row.pretaxIncome;
+        if (roh > 0 && roh < 0.6) t = roh;
+      }
+      return {
+        wert: row.operatingIncome * (1 - t) + row.depreciationAmortization - invest,
+        basis: "fcff",
+        label: "EBIT nach Steuern + Abschreibungen − Investitionen (Näherung, operativer Cashflow fehlt)",
+        genau: false,
+        steuerquote: t,
+      };
+    }
+
+    return null;
+  }
+
   // ---- Startannahmen aus den echten Zahlen ---------------------------------
   //
   // Leitet Vorschlagswerte aus der Historie ab, damit der Nutzer nicht vor
@@ -218,9 +278,11 @@
   function suggestParams(rows) {
     if (!rows || !rows.length) return null;
     var cur = rows[0];
-    if (!cur || !isNum(cur.operatingCashflow) || !isNum(cur.capex)) return null;
-    // capex kommt in Yahoo-Konvention negativ an -> Addition ist korrekt.
-    var fcf0 = cur.operatingCashflow + cur.capex;
+    if (!cur) return null;
+
+    var f = freeCashflow(cur);
+    if (!f) return null;
+    var fcf0 = f.wert;
 
     var g = 0.03;
     var hist = null;
@@ -231,6 +293,9 @@
 
     return {
       fcf0: fcf0,
+      fcfBasis: f.basis,          // "ocf" | "fcff"
+      fcfLabel: f.label,          // Klartext fuer die Anzeige
+      fcfGenau: f.genau,          // false = Naeherung, muss sichtbar bleiben
       years: 10,
       growth: { min: Math.max(-0.10, g - 0.04), mode: g, max: g + 0.04 },
       discountRate: { min: 0.07, mode: 0.09, max: 0.11 },
@@ -241,6 +306,7 @@
 
   return {
     mulberry32: mulberry32,
+    freeCashflow: freeCashflow,
     triangular: triangular,
     dcfEquityValue: dcfEquityValue,
     runBatch: runBatch,

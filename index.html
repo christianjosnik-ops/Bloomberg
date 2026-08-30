@@ -1058,7 +1058,7 @@ function GeoWorldMap({ geo, geoSel, setGeoSel }) {
  * Overlay verhaelt sich wie ein Fenster (Titelzeile, Schliessen, Esc), geht
  * aber ueberall.
  */
-// Eingabefelder der Annahmen. BEWUSST AUSSERHALB von MonteCarloWindow:
+// Eingabefelder der Annahmen. BEWUSST AUSSERHALB von MonteCarloPanel:
 // Waeren sie im Rumpf der Komponente definiert, entstuende bei jedem Rendern
 // ein NEUER Komponententyp. React kann den dann nicht wiedererkennen, haengt
 // das <input> aus und neu ein - und der Fokus geht bei jedem Tastendruck
@@ -1087,7 +1087,7 @@ function MCAnnahmeZeile({ label, gruppe, hinweis, ann, setAnn, disabled }) {
   );
 }
 
-function MonteCarloWindow({ d, onClose }) {
+function MonteCarloPanel({ d }) {
   const canvasRef = useRef(null);
   const laufRef = useRef(null);   // Zustand des laufenden Simulationslaufs
   const rafRef = useRef(0);
@@ -1097,39 +1097,65 @@ function MonteCarloWindow({ d, onClose }) {
   const [ergebnis, setErgebnis] = useState(null);
   const [achse, setAchse] = useState(null);
   const [seed, setSeed] = useState(12345);
+  // Von Hand eingetragener freier Cashflow (in Milliarden), fuer den Fall, dass
+  // die Kapitalflussrechnung fehlt - siehe Kommentar bei `basis`.
+  const [manuellMrd, setManuellMrd] = useState("");
 
   const GESAMT = 4000;
   const PILOT = 400;    // Vorlauf, nur um die Skala festzulegen (siehe unten)
   const PRO_BILD = 60;
 
   // ---- Ausgangsgroessen aus den echten Zahlen des Wertes -------------------
+  //
   // Bewusst defensiv ueber window.*: faellt eine der Logikdateien aus, zeigt
-  // das Fenster einen Hinweis statt die ganze App mitzureissen.
+  // der Reiter einen Hinweis statt die ganze App mitzureissen.
+  //
+  // WICHTIG - warum es hier eine Handeingabe gibt: Der freie Cashflow kommt aus
+  // der Kapitalflussrechnung, und Yahoo liefert die nicht fuer jeden Titel.
+  // mc.js hat dafuer schon eine Rueckfallebene (EBIT nach Steuern +
+  // Abschreibungen), aber auch die braucht die Investitionen. Faellt beides
+  // aus, war die ganze Bewertung frueher gesperrt - wegen fehlender Daten, die
+  // man in zwei Sekunden aus dem Geschaeftsbericht abtippen kann. Deshalb: wenn
+  // nichts abzuleiten ist, ein Eingabefeld statt einer Sackgasse.
   const basis = useMemo(() => {
     const MCmod = window.MC;
     if (!MCmod || !window.Ratios) return { fehler: "Rechenmodul nicht geladen (mc.js/ratios.js)." };
     const rows = (d && d.fundamentals) || [];
-    if (rows.length < 1) return { fehler: "Für diesen Wert liegen keine Bilanzdaten vor — ohne Cashflow lässt sich nichts bewerten." };
-    const p = MCmod.suggestParams(rows);
-    if (!p) return { fehler: "Die Bilanzdaten enthalten keinen operativen Cashflow / keine Investitionen — dafür ist ein DCF das falsche Werkzeug." };
-    if (p.fcf0 <= 0) return { fehler: "Der freie Cashflow ist negativ. Eine Firma, die Geld verbrennt, lässt sich so nicht bewerten — das ist kein Anzeigefehler." };
-    const r = window.Ratios.computeRatios(rows[0], rows[1] || null);
-    // mktcap kommt in MILLIARDEN, die Bilanzzeilen in ganzen Einheiten.
-    const marketCap = (d.mktcap != null) ? d.mktcap * 1e9 : null;
-    return { p: p, netDebt: (r && r.netDebt != null) ? r.netDebt : 0, marketCap: marketCap };
-  }, [d]);
+    const marketCap = (d && d.mktcap != null) ? d.mktcap * 1e9 : null;
+    const r = rows.length ? window.Ratios.computeRatios(rows[0], rows[1] || null) : null;
+    const netDebt = (r && r.netDebt != null) ? r.netDebt : 0;
+
+    const handEingabe = parseFloat(manuellMrd);
+    const hand = (!isNaN(handEingabe) && handEingabe > 0) ? handEingabe * 1e9 : null;
+
+    const p = rows.length ? MCmod.suggestParams(rows) : null;
+
+    // Handeingabe hat Vorrang: wer sie ausfuellt, will genau diesen Wert.
+    if (hand != null) {
+      const basisP = p || {
+        years: 10,
+        growth: { min: -0.01, mode: 0.03, max: 0.07 },
+        discountRate: { min: 0.07, mode: 0.09, max: 0.11 },
+        terminalGrowth: { min: 0.005, mode: 0.02, max: 0.03 },
+        histGrowth: null,
+      };
+      return {
+        p: Object.assign({}, basisP, { fcf0: hand, fcfBasis: "hand", fcfLabel: "von Hand eingetragen", fcfGenau: true }),
+        netDebt: netDebt, marketCap: marketCap, handAktiv: true,
+      };
+    }
+
+    if (!rows.length) return { fehler: "Für diesen Wert liegen keine Bilanzdaten vor.", brauchtHand: true, netDebt: 0, marketCap: marketCap };
+    if (!p) return { fehler: "Yahoo liefert für diesen Wert keine verwertbare Kapitalflussrechnung (weder operativer Cashflow noch Investitionen).", brauchtHand: true, netDebt: netDebt, marketCap: marketCap };
+    if (p.fcf0 <= 0) return { fehler: "Der errechnete freie Cashflow ist negativ (" + p.fcfLabel + "). Eine Firma, die Geld verbrennt, lässt sich per DCF nicht bewerten — das ist kein Anzeigefehler.", brauchtHand: true, netDebt: netDebt, marketCap: marketCap };
+
+    return { p: p, netDebt: netDebt, marketCap: marketCap };
+  }, [d, manuellMrd]);
 
   const [ann, setAnn] = useState(null);
   useEffect(() => { if (basis && basis.p) setAnn(basis.p); }, [basis]);
 
-  // Esc schliesst das Fenster - wie ein echtes Fenster.
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  // Laufenden Lauf abbrechen, wenn das Fenster verschwindet - sonst zeichnet
+  // Laufenden Lauf abbrechen, wenn der Reiter verlassen wird - sonst zeichnet
   // die Schleife auf ein Canvas, das es nicht mehr gibt.
   useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
 
@@ -1280,24 +1306,35 @@ function MonteCarloWindow({ d, onClose }) {
   const pct = (x) => (x == null ? "—" : (x >= 0 ? "+" : "") + (x * 100).toFixed(1) + "%");
   const geld = (x) => (x == null ? "—" : fmtCap(x / 1e9));
 
+  // Handeingabe: steht sowohl als Rueckfallebene bei fehlenden Daten als auch
+  // dauerhaft zum Ueberschreiben bereit (eigene Schaetzung statt Bilanzwert).
+  const handFeld = (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+      <span className="stat__k">FREIER CASHFLOW VON HAND</span>
+      <input className="field" type="number" step="0.1" disabled={laeuft}
+        value={manuellMrd} onChange={(e) => setManuellMrd(e.target.value)}
+        placeholder="z.B. 2.4" style={{ width: 90, padding: "2px 4px" }} />
+      <span className="muted" style={{ fontSize: "var(--fs-2xs)" }}>Mrd. {d.currency || ""} · überschreibt den Bilanzwert</span>
+      {manuellMrd !== "" && <button className="btn btn--ghost" onClick={() => setManuellMrd("")} disabled={laeuft}>zurücksetzen</button>}
+    </div>
+  );
+
   return (
-    <div onClick={onClose}
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.72)", zIndex: 900, display: "flex", alignItems: "center", justifyContent: "center", padding: 12 }}>
-      <div onClick={(e) => e.stopPropagation()} className="panel"
-        style={{ width: "min(980px, 100%)", maxHeight: "92dvh", overflowY: "auto", padding: 0 }}>
-
-        {/* Titelzeile */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", borderBottom: "1px solid var(--line)", position: "sticky", top: 0, background: C.panel, zIndex: 2 }}>
-          <div style={{ color: C.orange, fontWeight: 700, letterSpacing: 0.5 }}>
-            ◈ MONTE CARLO · {d.s} <span className="muted" style={{ fontWeight: 400 }}>Bewertungs-Bandbreite</span>
-          </div>
-          <button className="btn btn--ghost" onClick={onClose}>✕ ESC</button>
-        </div>
-
-        <div style={{ padding: 12 }}>
-          {basis.fehler ? (
+    <div className="page">
+      <Panel title={<>◈ MONTE CARLO · {d.s} <span className="muted" style={{ fontWeight: 400 }}>Bewertungs-Bandbreite</span></>}>
+        <div>
+          {basis.fehler ? (<>
             <div className="note note--warn">{basis.fehler}</div>
-          ) : (<>
+            {basis.brauchtHand && (
+              <div style={{ marginTop: 10 }}>
+                <div className="muted" style={{ lineHeight: 1.5 }}>
+                  Der freie Cashflow lässt sich hier nicht aus den Daten ableiten. Du kannst ihn von Hand eintragen
+                  (Geschäftsbericht: operativer Cashflow minus Investitionen) — die Simulation läuft dann damit.
+                </div>
+                {handFeld}
+              </div>
+            )}
+          </>) : (<>
             <div className="muted" style={{ marginBottom: 10, lineHeight: 1.5 }}>
               Jeder Punkt ist <b>ein</b> kompletter Durchlauf mit zufällig gezogenen Annahmen.
               Die gestrichelte Linie ist der heutige Börsenwert: Punkte <span style={{ color: C.green }}>darüber</span> sind
@@ -1314,6 +1351,9 @@ function MonteCarloWindow({ d, onClose }) {
               </div>
               <div>
                 <Stat k="FREIER CASHFLOW" v={geld(basis.p.fcf0) + " " + cur} />
+                <div className="muted" style={{ fontSize: "var(--fs-2xs)", marginTop: -2, marginBottom: 4, color: basis.p.fcfGenau ? undefined : C.amber }}>
+                  {basis.p.fcfGenau ? "Basis: " : "⚠ "}{basis.p.fcfLabel}
+                </div>
                 <Stat k="NETTOSCHULDEN" v={geld(basis.netDebt) + " " + cur} />
                 <Stat k="BÖRSENWERT HEUTE" v={basis.marketCap != null ? geld(basis.marketCap) + " " + cur : "—"} />
                 <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -1367,9 +1407,10 @@ function MonteCarloWindow({ d, onClose }) {
                 {basis.marketCap == null && <div className="muted" style={{ marginTop: 6 }}>Kein Börsenwert verfügbar — deshalb nur die Wertverteilung, keine Über-/Unterbewertung.</div>}
               </div>
             )}
+            {handFeld}
           </>)}
         </div>
-      </div>
+      </Panel>
     </div>
   );
 }
@@ -1492,7 +1533,6 @@ function App() {
   const [chartRange, setChartRange] = useState("6mo");
   const [showSMA, setShowSMA] = useState(true); const [showVol, setShowVol] = useState(true); const [showRSI, setShowRSI] = useState(true);
   const [chartMode, setChartMode] = useState("line"); // "line" | "candle"
-  const [mcOffen, setMcOffen] = useState(false);
   const [cmd, setCmd] = useState("");
   const [suggestions, setSuggestions] = useState([]);
   const [suggestDone, setSuggestDone] = useState(false);
@@ -1915,7 +1955,7 @@ function App() {
         <span onClick={disconnect} className="btn" style={{ fontSize: "var(--fs-2xs)" }}>LOGOUT</span>
       </div>
       <div className="fbar">
-        {Fkey("F1 MARKT", "markt", C.amber)}{Fkey("F2 SCANNER", "scanner", C.green)}{Fkey("F3 NEWS", "news", C.red)}{Fkey("F4 MAKRO", "makro", C.blue)}{Fkey("F5 RATIO", "ratio", C.violet)}{Fkey("F6 WELTLAGE", "geo", "#ff6b6b")}
+        {Fkey("F1 MARKT", "markt", C.amber)}{Fkey("F2 SCANNER", "scanner", C.green)}{Fkey("F3 NEWS", "news", C.red)}{Fkey("F4 MAKRO", "makro", C.blue)}{Fkey("F5 RATIO", "ratio", C.violet)}{Fkey("F6 WELTLAGE", "geo", "#ff6b6b")}{Fkey("F7 MONTE CARLO", "mc", C.orange)}
         <span className="stat__k" style={{ marginLeft: 6 }}>EU:</span>
         {EU_PRESETS.slice(0, 8).map((p) => <button key={p.y} onClick={() => loadDetail(p)} title={p.label} className="btn" style={{ color: C.blue }}>{p.s}</button>)}
         <span className="stat__k" style={{ marginLeft: 6 }}>ASIA:</span>
@@ -1996,11 +2036,7 @@ function App() {
             </Panel>
 
             <div className="grid-pair" style={{ marginBottom: 8 }}>
-              <Panel title="KENNZAHLEN" right={
-                <button className="btn btn--ghost" onClick={() => setMcOffen(true)} disabled={!d.fundamentals || !d.fundamentals.length}
-                  title={d.fundamentals && d.fundamentals.length ? "Bewertungs-Bandbreite simulieren" : "Keine Bilanzdaten für diesen Wert"}>
-                  ◈ MONTE CARLO
-                </button>}>
+              <Panel title="KENNZAHLEN">
                 <Stat k="OPEN" v={d.open ?? "—"} /><Stat k="HOCH" v={d.high ?? "—"} color={C.green} /><Stat k="TIEF" v={d.low ?? "—"} color={C.red} /><Stat k="VORTAG" v={d.prevClose ?? "—"} /><Stat k="WÄHRUNG" v={d.currency || "—"} /><Stat k="MKT CAP" v={fmtCap(d.mktcap)} />
                 <Stat k="52W HOCH" v={d.week52High ?? "—"} color={C.green} /><Stat k="52W TIEF" v={d.week52Low ?? "—"} color={C.red} />
                 <Stat k="VOLUMEN" v={fmtVol(d.volume)} /><Stat k="Ø VOLUMEN" v={fmtVol(d.avgVolume)} /><Stat k="BETA" v={d.beta ?? "—"} />
@@ -2036,7 +2072,6 @@ function App() {
               </div>
             </div>
           </Panel>
-          {mcOffen && <MonteCarloWindow d={d} onClose={() => setMcOffen(false)} />}
         </div>
       )}
 
@@ -2130,6 +2165,8 @@ function App() {
           )}
         </div>
       )}
+
+      {tab === "mc" && <MonteCarloPanel d={d} />}
 
       {tab === "geo" && <GeoPanel geo={geo} geoBusy={geoBusy} geoErr={geoErr} geoSel={geoSel} setGeoSel={setGeoSel} loadGeo={loadGeo}
         diag={diag} diagBusy={diagBusy} diagErr={diagErr} runDiag={runDiag} />}
