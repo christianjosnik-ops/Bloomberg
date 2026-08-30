@@ -1172,16 +1172,23 @@ function MonteCarloPanel({ d }) {
     return { ctx: ctx, w: br.width, h: br.height };
   }
 
-  function zeichneRahmen(g, lo, hi, marketCap) {
+  function zeichneRahmen(g, lo, hi, marketCap, ausserhalb) {
     const { ctx, w, h } = g;
     ctx.clearRect(0, 0, w, h);
     if (marketCap == null || !(hi > lo)) return;
     // Linie des heutigen Boersenwerts: DIE Bezugsgroesse. Punkte darueber =
     // Durchlaeufe, in denen die Firma mehr wert waere als sie kostet.
-    const y = h - ((marketCap - lo) / (hi - lo)) * h;
+    //
+    // Liegt der Boersenwert ausserhalb der Skala, wird die Linie an den
+    // entsprechenden Rand gelegt und dicker/durchgezogen gezeichnet - so ist
+    // sofort erkennbar, dass sie eine Richtung anzeigt und keinen Ort. Eine
+    // gestrichelte Linie am Rand haette wie ein echter Messwert ausgesehen.
+    const y = ausserhalb === "oben" ? 1.5
+      : ausserhalb === "unten" ? h - 1.5
+        : h - ((marketCap - lo) / (hi - lo)) * h;
     ctx.strokeStyle = C.amber;
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = ausserhalb ? 3 : 1;
+    ctx.setLineDash(ausserhalb ? [] : [4, 4]);
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
     ctx.setLineDash([]);
   }
@@ -1267,11 +1274,28 @@ function MonteCarloPanel({ d }) {
       // zusammenfaellt. 2%/98% statt min/max.
       let lo = MCmod.percentile(sortiert, 0.02);
       let hi = MCmod.percentile(sortiert, 0.98);
-      if (basis.marketCap != null) { lo = Math.min(lo, basis.marketCap); hi = Math.max(hi, basis.marketCap); }
+
+      // Die Skala folgt den DATEN. Frueher wurde der Boersenwert bedingungslos
+      // hineingezwungen (Math.min/Math.max) - liegt er weit weg, presste das
+      // die ganze Punktwolke zu einem Strich zusammen. Live beobachtet bei
+      // Tencent: Boersenwert 4,10 Bio. HKD gegen errechnete 143-256 Mrd., die
+      // Verteilung war nicht mehr lesbar.
+      //
+      // Jetzt wird er nur einbezogen, wenn er in der Naehe liegt (halbe
+      // Datenbreite Zugabe). Sonst bleibt die Wolke lesbar und der Boersenwert
+      // wird als "ausserhalb" am Rand markiert - die Aussage steckt ohnehin
+      // im Text darunter ("in N% der Durchlaeufe darueber").
+      const breite = (hi - lo) || Math.abs(hi) || 1;
+      let ausserhalb = null;
+      if (basis.marketCap != null) {
+        if (basis.marketCap < lo - breite * 0.5) ausserhalb = "unten";
+        else if (basis.marketCap > hi + breite * 0.5) ausserhalb = "oben";
+        else { lo = Math.min(lo, basis.marketCap); hi = Math.max(hi, basis.marketCap); }
+      }
       const luft = (hi - lo) * 0.08 || Math.abs(hi) * 0.1 || 1;
-      L.lo = lo - luft; L.hi = hi + luft;
-      setAchse({ lo: L.lo, hi: L.hi });
-      zeichneRahmen(L.g, L.lo, L.hi, basis.marketCap);
+      L.lo = lo - luft; L.hi = hi + luft; L.ausserhalb = ausserhalb;
+      setAchse({ lo: L.lo, hi: L.hi, ausserhalb: ausserhalb });
+      zeichneRahmen(L.g, L.lo, L.hi, basis.marketCap, ausserhalb);
       zeichnePunkte(L.g, L.werte, 0, 0, PILOT, L.lo, L.hi, basis.marketCap);
       L.gezeichnet = L.werte.length;
       L.versuche = PILOT;
@@ -1373,6 +1397,12 @@ function MonteCarloPanel({ d }) {
               {achse && (<>
                 <span className="muted" style={{ position: "absolute", top: 3, left: 5, fontSize: "var(--fs-2xs)" }}>{geld(achse.hi)} {cur}</span>
                 <span className="muted" style={{ position: "absolute", bottom: 3, left: 5, fontSize: "var(--fs-2xs)" }}>{geld(achse.lo)} {cur}</span>
+                {achse.ausserhalb && (
+                  <span style={{ position: "absolute", left: 5, fontSize: "var(--fs-2xs)", color: C.amber, fontWeight: 700,
+                    top: achse.ausserhalb === "oben" ? 16 : undefined, bottom: achse.ausserhalb === "unten" ? 16 : undefined }}>
+                    {achse.ausserhalb === "oben" ? "↑" : "↓"} Börsenwert {geld(basis.marketCap)} {cur} — außerhalb der Skala
+                  </span>
+                )}
               </>)}
               {!achse && !laeuft && (
                 <div className="muted" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -1381,6 +1411,14 @@ function MonteCarloPanel({ d }) {
               )}
             </div>
 
+            {achse && achse.ausserhalb && (
+              <div className="muted" style={{ marginTop: 4, lineHeight: 1.5 }}>
+                Der Börsenwert liegt weit {achse.ausserhalb === "oben" ? "über" : "unter"} allen errechneten Werten.
+                Die Skala folgt deshalb der Punktwolke, damit sie lesbar bleibt — die dicke Linie am Rand zeigt nur
+                die <b>Richtung</b>, nicht die Höhe. Bei so großem Abstand lohnt ein Blick auf den freien Cashflow:
+                ein zu niedrig angesetzter Wert erzeugt genau dieses Bild.
+              </div>
+            )}
             <div style={{ display: "flex", gap: 14, marginTop: 6, flexWrap: "wrap" }} className="muted">
               <span>{fortschritt.done.toLocaleString("de-DE")} / {GESAMT.toLocaleString("de-DE")} Durchläufe</span>
               {fortschritt.skipped > 0 && (

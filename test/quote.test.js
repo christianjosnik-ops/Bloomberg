@@ -40,28 +40,28 @@ function yahooChart({ previousClose, chartPreviousClose, regularMarketPrice }) {
     assert.strictEqual(out.prevClose, 109, "prevClose MUSS der Vortagesschluss sein, nicht der Kurs vor dem Chart-Zeitraum");
     assert.strictEqual(out.chg, 1, "Tagesveraenderung 110-109 = 1");
     assert.strictEqual(out.chgPct, 0.92, "Tagesveraenderung in Prozent, nicht die 37.5% des Halbjahres");
-    console.log("Block 1/8 (previousClose hat Vorrang vor chartPreviousClose): OK");
+    console.log("Block 1/10 (previousClose hat Vorrang vor chartPreviousClose): OK");
   }
 
   // --- Rueckfallebene: fehlt previousClose, darf chartPreviousClose einspringen ---
   {
     const out = shape(yahooChart({ regularMarketPrice: 110, previousClose: null, chartPreviousClose: 80 }), "^GSPC");
     assert.strictEqual(out.prevClose, 80, "ohne previousClose ist chartPreviousClose besser als gar nichts");
-    console.log("Block 2/8 (Rueckfall auf chartPreviousClose wenn noetig): OK");
+    console.log("Block 2/10 (Rueckfall auf chartPreviousClose wenn noetig): OK");
   }
 
   // --- Letzte Rueckfallebene: gar keine Meta-Angabe -> vorletzter Punkt der Reihe ---
   {
     const out = shape(yahooChart({ regularMarketPrice: 110, previousClose: null, chartPreviousClose: null }), "^GSPC");
     assert.strictEqual(out.prevClose, 109, "ohne Meta-Angaben zaehlt der vorletzte Kurs der Zeitreihe");
-    console.log("Block 3/8 (Rueckfall auf die Zeitreihe): OK");
+    console.log("Block 3/10 (Rueckfall auf die Zeitreihe): OK");
   }
 
   // --- Bei range=1d sind beide Werte gleich - das Ergebnis darf sich nicht aendern ---
   {
     const out = shape(yahooChart({ regularMarketPrice: 110, previousClose: 109, chartPreviousClose: 109 }), "^GSPC");
     assert.strictEqual(out.chgPct, 0.92, "bei kurzem Zeitraum sind beide Felder identisch, das Ergebnis bleibt korrekt");
-    console.log("Block 4/8 (kurzer Zeitraum: unveraendert korrekt): OK");
+    console.log("Block 4/10 (kurzer Zeitraum: unveraendert korrekt): OK");
   }
 
   // --- Kerzendaten: Open/Hoch/Tief muessen JE BALKEN mitkommen ---
@@ -86,7 +86,7 @@ function yahooChart({ previousClose, chartPreviousClose, regularMarketPrice }) {
       assert.ok(b.h >= Math.max(b.o, b.p) && b.l <= Math.min(b.o, b.p),
         `Balken ${i}: Hoch/Tief muessen Open und Schluss einschliessen`);
     });
-    console.log("Block 5/8 (Kerzendaten: Open/Hoch/Tief je Balken): OK");
+    console.log("Block 5/10 (Kerzendaten: Open/Hoch/Tief je Balken): OK");
   }
 
   // --- Luecken in den Kerzendaten duerfen die Zeitreihe nicht zerstoeren ---
@@ -107,7 +107,79 @@ function yahooChart({ previousClose, chartPreviousClose, regularMarketPrice }) {
     assert.strictEqual(out.series[1].o, null, "fehlendes Open wird null - nie 0, das waere eine erfundene Kerze");
     assert.strictEqual(out.series[1].h, null);
     assert.strictEqual(out.series[1].l, null);
-    console.log("Block 6/8 (Luecken in o/h/l: Linie bleibt, Kerze entfaellt, kein Nullwert): OK");
+    console.log("Block 6/10 (Luecken in o/h/l: Linie bleibt, Kerze entfaellt, kein Nullwert): OK");
+  }
+
+  // --- Fundamentaldaten: die Zeitreihe bringt den Cashflow, quoteSummary die Bilanz ---
+  //     Der gemeldete Fall: quoteSummary liefert Bilanz und GuV, aber keine
+  //     Kapitalflussrechnung. Damit fehlten operativer Cashflow und
+  //     Investitionen - und ohne die stehen FCF-Marge (F5) und Bewertung (F7)
+  //     ohne Zahlen da. Beide Quellen muessen sich feldweise ergaenzen.
+  {
+    const roh = yahooChart({ regularMarketPrice: 110, previousClose: 109, chartPreviousClose: 80 });
+    const daten = Object.assign({}, roh, {
+      // ALT: Bilanz + GuV vorhanden, Kapitalflussrechnung LEER (der reale Befund)
+      fund: { quoteSummary: { result: [{
+        balanceSheetHistory: { balanceSheetStatements: [
+          { endDate: { fmt: "2024-12-31" }, totalStockholderEquity: { raw: 800 }, totalAssets: { raw: 2000 } },
+        ] },
+        incomeStatementHistory: { incomeStatementHistory: [
+          { endDate: { fmt: "2024-12-31" }, totalRevenue: { raw: 1200 } },
+        ] },
+        cashflowStatementHistory: { cashflowStatements: [] },
+      }] } },
+      // NEU: Zeitreihe bringt genau die fehlenden Cashflow-Felder
+      ts: { timeseries: { result: [
+        { meta: { type: ["annualOperatingCashFlow"] },
+          annualOperatingCashFlow: [{ asOfDate: "2024-12-31", periodType: "12M", reportedValue: { raw: 360 } }] },
+        { meta: { type: ["annualCapitalExpenditure"] },
+          annualCapitalExpenditure: [{ asOfDate: "2024-12-31", periodType: "12M", reportedValue: { raw: -100 } }] },
+      ] } },
+    });
+    const out = shape(daten, "TEST");
+    const z = out.fundamentals.find((r) => r.year === 2024);
+    assert.ok(z, "das Jahr muss genau EINMAL vorkommen, nicht je Quelle einmal");
+    assert.strictEqual(out.fundamentals.filter((r) => r.year === 2024).length, 1, "keine doppelten Jahreszeilen");
+    assert.strictEqual(z.operatingCashflow, 360, "der Cashflow kommt aus der Zeitreihe - genau die Luecke von vorher");
+    assert.strictEqual(z.capex, -100);
+    assert.strictEqual(z.revenue, 1200, "der Umsatz aus quoteSummary - die alte Quelle traegt weiterhin bei");
+    assert.strictEqual(z.equity, 800, "und die Bilanz ebenso");
+    assert.deepStrictEqual(out.fundamentalsQuellen, { timeseries: 1, quoteSummary: 1 },
+      "beide Quellen muessen einzeln nachvollziehbar bleiben - sonst raet man bei einem Ausfall wieder");
+
+    // Faellt die Zeitreihe aus, darf die alte Quelle nicht mitgerissen werden.
+    const ohneTs = shape(Object.assign({}, daten, { ts: null }), "TEST");
+    assert.strictEqual(ohneTs.fundamentals[0].revenue, 1200, "ohne Zeitreihe traegt quoteSummary allein");
+    assert.strictEqual(ohneTs.fundamentals[0].operatingCashflow, null, "der Cashflow fehlt dann eben - null, kein Ersatzwert");
+
+    // Und umgekehrt: faellt quoteSummary aus, traegt die Zeitreihe allein.
+    const ohneQs = shape(Object.assign({}, daten, { fund: null }), "TEST");
+    assert.strictEqual(ohneQs.fundamentals[0].operatingCashflow, 360, "ohne quoteSummary traegt die Zeitreihe allein");
+    console.log("Block 7/10 (Fundamentaldaten: beide Quellen ergaenzen sich feldweise): OK");
+  }
+
+  // --- Der fertig gelieferte freie Cashflow hat Vorrang ---
+  {
+    const roh = yahooChart({ regularMarketPrice: 110, previousClose: 109, chartPreviousClose: 80 });
+    const out = shape(Object.assign({}, roh, {
+      fund: null,
+      ts: { timeseries: { result: [
+        { meta: { type: ["annualFreeCashFlow"] },
+          annualFreeCashFlow: [{ asOfDate: "2024-12-31", periodType: "12M", reportedValue: { raw: 275 } }] },
+        { meta: { type: ["annualOperatingCashFlow"] },
+          annualOperatingCashFlow: [{ asOfDate: "2024-12-31", periodType: "12M", reportedValue: { raw: 360 } }] },
+        { meta: { type: ["annualCapitalExpenditure"] },
+          annualCapitalExpenditure: [{ asOfDate: "2024-12-31", periodType: "12M", reportedValue: { raw: -100 } }] },
+      ] } },
+    }), "TEST");
+    const z = out.fundamentals[0];
+    assert.strictEqual(z.freeCashflowReported, 275, "Yahoos eigener freier Cashflow muss durchkommen");
+    // mc.js muss ihn dem Selbstrechnen (360-100=260) vorziehen.
+    const MC = require("../assets/js/mc.js");
+    const f = MC.freeCashflow(z);
+    assert.strictEqual(f.wert, 275, "der gemeldete freie Cashflow schlaegt die eigene Rechnung");
+    assert.strictEqual(f.basis, "reported");
+    console.log("Block 8/10 (gemeldeter freier Cashflow hat Vorrang vor der eigenen Rechnung): OK");
   }
 
   // --- Haengendes Yahoo darf die Function nicht bis zu Netlifys hartem Abbruch
@@ -139,7 +211,7 @@ function yahooChart({ previousClose, chartPreviousClose, regularMarketPrice }) {
     const body = JSON.parse(res.body);
     assert.strictEqual(body.source, "stooq");
     assert.ok(body.partial, "der eingeschraenkte Datenumfang der Ersatzquelle muss benannt sein");
-    console.log("Block 7/8 (haengendes Yahoo: Abbruch im Budget, Stooq springt ein): OK");
+    console.log("Block 9/10 (haengendes Yahoo: Abbruch im Budget, Stooq springt ein): OK");
   }
 
   // --- Auch die Symbolsuche braucht eine Frist: sie laeuft bei jedem
@@ -159,7 +231,7 @@ function yahooChart({ previousClose, chartPreviousClose, regularMarketPrice }) {
     assert.ok(dt < 6000, `die Suche braucht ein eigenes, knappes Budget statt des vollen Funktionsbudgets (gemessen: ${dt}ms)`);
     assert.strictEqual(res.statusCode, 200, "eine ergebnislose Suche ist kein Serverfehler");
     assert.deepStrictEqual(JSON.parse(res.body).quotes, [], "ohne Antwort gibt es eben keine Vorschlaege - aber keinen Haenger");
-    console.log("Block 8/8 (Symbolsuche bricht bei haengendem Yahoo sauber ab): OK");
+    console.log("Block 10/10 (Symbolsuche bricht bei haengendem Yahoo sauber ab): OK");
   }
 
   console.log("\nAlle quote.js-Tests erfolgreich.");

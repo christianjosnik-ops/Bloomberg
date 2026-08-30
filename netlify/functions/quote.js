@@ -3,6 +3,7 @@
 // Firmenprofil) WELTWEIT. Mit Cache(90s), Crumb+Cookie, Retry, UA-Rotation.
 
 const { normalizeStatements, isFinancialCompany } = require("./lib/normalizer");
+const { timeseriesUrl, parseTimeseries, mergeRows } = require("./lib/fundamentals");
 const { tryChain, fetchWithTimeout } = require("./lib/providers");
 
 const UAS = [
@@ -99,14 +100,22 @@ async function fetchAll(symbol, range, deadline) {
       // wartet. allSettled, damit ein Fehlschlag die anderen nicht mitreisst.
       const meta0 = chart.chart && chart.chart.result && chart.chart.result[0] && chart.chart.result[0].meta;
       const newsQuery = (meta0 && (meta0.longName || meta0.shortName)) || symbol;
-      const [cal, news, earn, fund] = (await Promise.allSettled([
+      const [cal, news, earn, fund, ts] = (await Promise.allSettled([
         fetchSum(symbol, ua, sess, "calendarEvents", deadline),
         yGet((h, q) => `https://${h}.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(newsQuery)}&newsCount=12&quotesCount=0${q}`, ua, sess, deadline),
         fetchSum(symbol, ua, sess, "earnings", deadline),
-        // Jahresabschluesse fuer das Kennzahlen-Modul (F5 RATIO).
+        // Jahresabschluesse, ALTE Schnittstelle (quoteSummary).
         fetchSum(symbol, ua, sess, "balanceSheetHistory,incomeStatementHistory,cashflowStatementHistory", deadline),
+        // Jahresabschluesse, AKTUELLE Schnittstelle (fundamentals-timeseries).
+        // Beide werden abgefragt und feldweise zusammengefuehrt, weil sie in
+        // der Praxis unterschiedlich vollstaendig sind: quoteSummary liefert
+        // oft Bilanz und GuV, aber keine Kapitalflussrechnung - genau die
+        // Luecke, die operativen Cashflow und Investitionen fehlen liess und
+        // damit FCF-Marge und Bewertung lahmgelegt hat. Der Abruf laeuft im
+        // selben Parallelblock, kostet also keine zusaetzliche Wartezeit.
+        yGet((h) => timeseriesUrl(h, symbol, Date.now(), 6), ua, sess, deadline),
       ])).map((r) => (r.status === "fulfilled" ? r.value : null));
-      return { chart, sum, cal, news, earn, fund };
+      return { chart, sum, cal, news, earn, fund, ts };
     }
     last = "429/blockiert";
     if (attempt < 3) await sleep(500 + attempt * 700);
@@ -209,13 +218,23 @@ function shape(data, symbol) {
   // F5 RATIO: normalisierte Jahresabschluesse fuers Kennzahlen-Modul (ausschliesslich GJ-Basis,
   // keine TTM-Werte gemischt - siehe normalizer.js). Fehlschlag hier lässt fundamentals einfach leer.
   const fundQs = data.fund && data.fund.quoteSummary && data.fund.quoteSummary.result && data.fund.quoteSummary.result[0];
+  let ausQuoteSummary = [];
   if (fundQs) {
-    out.fundamentals = normalizeStatements({
+    ausQuoteSummary = normalizeStatements({
       balanceSheet: (fundQs.balanceSheetHistory && fundQs.balanceSheetHistory.balanceSheetStatements) || [],
       incomeStatement: (fundQs.incomeStatementHistory && fundQs.incomeStatementHistory.incomeStatementHistory) || [],
       cashflow: (fundQs.cashflowStatementHistory && fundQs.cashflowStatementHistory.cashflowStatements) || [],
     });
   }
+  // Die Zeitreihe hat VORRANG: sie ist der Weg, den Yahoos eigene Oberflaeche
+  // heute geht, und liefert Felder (u.a. den fertigen freien Cashflow), die die
+  // alte Schnittstelle gar nicht kennt. quoteSummary fuellt nur noch Luecken.
+  const ausTimeseries = parseTimeseries(data.ts);
+  out.fundamentals = mergeRows(ausTimeseries, ausQuoteSummary);
+  out.fundamentalsQuellen = {
+    timeseries: ausTimeseries.length,
+    quoteSummary: ausQuoteSummary.length,
+  };
 
   const qs = data.sum && data.sum.quoteSummary && data.sum.quoteSummary.result && data.sum.quoteSummary.result[0];
   const calQs = data.cal && data.cal.quoteSummary && data.cal.quoteSummary.result && data.cal.quoteSummary.result[0];
