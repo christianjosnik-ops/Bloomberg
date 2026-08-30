@@ -45,9 +45,33 @@ const FIELD_MAP = {
   taxExpense: { stmt: "is", keys: ["incomeTaxExpense", "taxProvision"] },
   netIncome: { stmt: "is", keys: ["netIncome", "netIncomeApplicableToCommonShares"] },
   // Kapitalflussrechnung (cashflowStatementHistory)
-  depreciationAmortization: { stmt: "cf", keys: ["depreciation", "depreciationAndAmortization"] },
-  operatingCashflow: { stmt: "cf", keys: ["totalCashFromOperatingActivities", "operatingCashflow"] },
-  capex: { stmt: "cf", keys: ["capitalExpenditures"] },
+  //
+  // BREITE ALIAS-LISTEN, weil Yahoo diese Felder ueber die API-Generationen
+  // unterschiedlich benannt hat: das aeltere quoteSummary-Schema verwendet
+  // "totalCashFromOperatingActivities"/"capitalExpenditures", neuere Antworten
+  // die Namen aus der Zeitreihen-API ("operatingCashFlow",
+  // "capitalExpenditure" im Singular, "netPPEPurchaseAndSale"). Kommt nur ein
+  // neuer Name an, blieben operativer Cashflow und Investitionen sonst leer -
+  // und damit faellt sowohl die FCF-Marge (ratios.js) als auch die gesamte
+  // Monte-Carlo-Bewertung aus, wegen eines blossen Namensunterschieds.
+  //
+  // pick() nimmt das erste VORHANDENE numerische Feld, zusaetzliche Namen
+  // koennen also nichts kaputtmachen. Die Reihenfolge ist die Praeferenz.
+  depreciationAmortization: {
+    stmt: "cf",
+    keys: ["depreciation", "depreciationAndAmortization", "depreciationAmortizationDepletion", "depreciationAndAmortizationInCashFlow"],
+  },
+  operatingCashflow: {
+    stmt: "cf",
+    keys: [
+      "totalCashFromOperatingActivities", "operatingCashflow", "operatingCashFlow",
+      "netCashProvidedByUsedInOperatingActivities", "cashFlowFromContinuingOperatingActivities",
+    ],
+  },
+  capex: {
+    stmt: "cf",
+    keys: ["capitalExpenditures", "capitalExpenditure", "netPPEPurchaseAndSale", "purchaseOfPPE"],
+  },
 };
 
 function pick(statement, keys) {
