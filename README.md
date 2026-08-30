@@ -145,7 +145,19 @@ Technisches:
      (Naeherung, mit ⚠ gekennzeichnet)
   3. `hand` - von Hand eingetragen. Faellt beides aus, gibt es ein Eingabefeld
      statt einer Sackgasse; es ueberschreibt auch sonst jederzeit den
-     Bilanzwert.
+     Bilanzwert. Beim Wechsel des Wertes wird es zurueckgesetzt - sonst gaelte
+     ein fuer Firma A eingetragener Cashflow stillschweigend auch fuer Firma B.
+- **Negativer freier Cashflow**: Ein DCF braucht einen positiven Ausgangswert;
+  ein negativer wird durch das Wachstum nur negativer. Statt bloss abzulehnen,
+  unterscheidet der Reiter zwei Faelle - `freeCashflowLage()` wertet dafuer ALLE
+  vorhandenen Jahre aus:
+  - **Einzelnes Investitions-/Sonderjahr** (Mehrheit der Jahre positiv und
+    Mehrjahresschnitt positiv): Der Schnitt wird als Ausgangswert angeboten,
+    die negativen Jahre eingerechnet. Ein Knopf uebernimmt ihn.
+  - **Dauerhaft negativ**: Dann ist ein DCF unanwendbar, nicht bloss ungenau -
+    das wird gesagt, samt Hinweis auf Umsatzmultiplikatoren als ueblichen Weg.
+  Die Mehrheitsbedingung verhindert Rosinenpickerei: ein einzelnes sehr gutes
+  Jahr, das den Schnitt allein ins Positive zieht, taugt nicht als Grundlage.
 - Eigener Zufallsgenerator mit **Startwert** statt `Math.random()`. Nur so sind
   die Tests reproduzierbar - und derselbe Startwert liefert denselben Lauf.
 - Gerechnet wird **stapelweise** ueber `requestAnimationFrame`, damit der

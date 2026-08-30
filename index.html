@@ -1126,9 +1126,16 @@ function MonteCarloPanel({ d }) {
     const netDebt = (r && r.netDebt != null) ? r.netDebt : 0;
 
     const handEingabe = parseFloat(manuellMrd);
+    // Ein eingetragener Wert <= 0 wurde frueher einfach ignoriert und die
+    // Anzeige fiel wortlos auf den Bilanzwert zurueck - der Nutzer sah nicht,
+    // dass seine Eingabe verworfen wurde. Jetzt wird der Fall benannt.
+    const handUngueltig = !isNaN(handEingabe) && handEingabe <= 0;
     const hand = (!isNaN(handEingabe) && handEingabe > 0) ? handEingabe * 1e9 : null;
 
     const p = rows.length ? MCmod.suggestParams(rows) : null;
+    // Der freie Cashflow ueber ALLE vorhandenen Jahre - noetig, um ein
+    // einzelnes Investitionsjahr von dauerhaftem Geldverbrennen zu trennen.
+    const lage = rows.length ? MCmod.freeCashflowLage(rows) : null;
 
     // Handeingabe hat Vorrang: wer sie ausfuellt, will genau diesen Wert.
     if (hand != null) {
@@ -1145,15 +1152,38 @@ function MonteCarloPanel({ d }) {
       };
     }
 
-    if (!rows.length) return { fehler: "Für diesen Wert liegen keine Bilanzdaten vor.", brauchtHand: true, netDebt: 0, marketCap: marketCap };
-    if (!p) return { fehler: "Yahoo liefert für diesen Wert keine verwertbare Kapitalflussrechnung (weder operativer Cashflow noch Investitionen).", brauchtHand: true, netDebt: netDebt, marketCap: marketCap };
-    if (p.fcf0 <= 0) return { fehler: "Der errechnete freie Cashflow ist negativ (" + p.fcfLabel + "). Eine Firma, die Geld verbrennt, lässt sich per DCF nicht bewerten — das ist kein Anzeigefehler.", brauchtHand: true, netDebt: netDebt, marketCap: marketCap };
+    if (!rows.length) return { fehler: "Für diesen Wert liegen keine Bilanzdaten vor.", brauchtHand: true, handUngueltig: handUngueltig, netDebt: 0, marketCap: marketCap };
+    if (!p) return { fehler: "Yahoo liefert für diesen Wert keine verwertbare Kapitalflussrechnung (weder operativer Cashflow noch Investitionen).", brauchtHand: true, handUngueltig: handUngueltig, netDebt: netDebt, marketCap: marketCap };
+    if (p.fcf0 <= 0) {
+      // NEGATIVER FREIER CASHFLOW. Ein DCF setzt einen positiven Ausgangswert
+      // voraus: ein negativer, mit Wachstum hochgerechnet, wird nur negativer,
+      // und der Fortfuehrungswert ebenfalls - das Ergebnis waere eine Zahl ohne
+      // Aussage. Die Bewertung wird deshalb nicht gerechnet.
+      //
+      // Wichtig ist aber die Unterscheidung, die frueher fehlte: EIN negatives
+      // Jahr (Uebernahme, Investitionszyklus) ist etwas anderes als dauerhaft
+      // negative Cashflows. Im ersten Fall wird der Mehrjahresschnitt als
+      // Ausgangswert angeboten, im zweiten ist der DCF schlicht das falsche
+      // Werkzeug - und das gehoert gesagt, nicht kaschiert.
+      return {
+        fehler: null, negativ: true, lage: lage, fcfLabel: p.fcfLabel,
+        brauchtHand: true, handUngueltig: handUngueltig,
+        netDebt: netDebt, marketCap: marketCap,
+      };
+    }
 
-    return { p: p, netDebt: netDebt, marketCap: marketCap };
+    return { p: p, netDebt: netDebt, marketCap: marketCap, lage: lage, handUngueltig: handUngueltig };
   }, [d, manuellMrd]);
 
   const [ann, setAnn] = useState(null);
   useEffect(() => { if (basis && basis.p) setAnn(basis.p); }, [basis]);
+
+  // Handeingabe beim Wechsel des Wertes zuruecksetzen. Ohne das wuerde ein fuer
+  // Firma A eingetragener Cashflow stillschweigend auch fuer Firma B verwendet -
+  // die Anzeige saehe voellig normal aus ("Basis: von Hand eingetragen"), waere
+  // aber eine Bewertung mit den Zahlen eines fremden Unternehmens. Genau die
+  // Art stiller Falschauskunft, die das Modul sonst ueberall vermeidet.
+  useEffect(() => { setManuellMrd(""); }, [d && d.s]);
 
   // Laufenden Lauf abbrechen, wenn der Reiter verlassen wird - sonst zeichnet
   // die Schleife auf ein Canvas, das es nicht mehr gibt.
@@ -1360,6 +1390,11 @@ function MonteCarloPanel({ d }) {
         placeholder="z.B. 2.4" style={{ width: 90, padding: "2px 4px" }} />
       <span className="muted" style={{ fontSize: "var(--fs-2xs)" }}>Mrd. {d.currency || ""} · überschreibt den Bilanzwert</span>
       {manuellMrd !== "" && <button className="btn btn--ghost" onClick={() => setManuellMrd("")} disabled={laeuft}>zurücksetzen</button>}
+      {basis.handUngueltig && (
+        <span style={{ color: C.amber, fontSize: "var(--fs-2xs)", width: "100%" }}>
+          ⚠ Der Wert muss größer als 0 sein — ein negativer Ausgangswert ergibt im DCF keine sinnvolle Bewertung. Die Eingabe wird nicht verwendet.
+        </span>
+      )}
     </div>
   );
 
@@ -1367,7 +1402,50 @@ function MonteCarloPanel({ d }) {
     <div className="page">
       <Panel title={<>◈ MONTE CARLO · {d.s} <span className="muted" style={{ fontWeight: 400 }}>Bewertungs-Bandbreite</span></>}>
         <div>
-          {basis.fehler ? (<>
+          {basis.negativ ? (<>
+            <div className="note note--warn">
+              <b>Der freie Cashflow ist negativ</b> — die Firma hat im letzten Geschäftsjahr mehr Geld ausgegeben als eingenommen
+              ({basis.fcfLabel}).
+              <div style={{ marginTop: 6 }}>
+                Ein DCF rechnet den Ausgangswert in die Zukunft hoch. Ist er negativ, wird er durch das Wachstum nur negativer,
+                und der Fortführungswert ebenso — heraus käme eine Zahl ohne Aussage. Deshalb wird hier nicht gerechnet.
+              </div>
+            </div>
+
+            {basis.lage && basis.lage.serie.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <div className="stat__k" style={{ marginBottom: 4 }}>FREIER CASHFLOW JE JAHR</div>
+                {basis.lage.serie.map((j) => (
+                  <Stat key={j.year} k={String(j.year)} v={geld(j.wert) + " " + cur} color={j.wert > 0 ? C.green : C.red} />
+                ))}
+                <div className="muted" style={{ marginTop: 6, lineHeight: 1.5 }}>
+                  {basis.lage.positiveJahre} von {basis.lage.jahre} Jahren positiv · Durchschnitt {geld(basis.lage.schnitt)} {cur}
+                </div>
+
+                {basis.lage.schnittTaugt ? (
+                  <div style={{ marginTop: 8 }}>
+                    <div className="muted" style={{ lineHeight: 1.5, marginBottom: 6 }}>
+                      Die Mehrzahl der Jahre ist positiv — das letzte Jahr sieht nach einem einzelnen Investitions- oder
+                      Sonderjahr aus, nicht nach einem dauerhaft negativen Geschäft. Der Mehrjahresschnitt (die negativen
+                      Jahre eingerechnet) ist als Ausgangswert vertretbar:
+                    </div>
+                    <button className="btn btn--go" disabled={laeuft}
+                      onClick={() => setManuellMrd((basis.lage.schnitt / 1e9).toFixed(2))}>
+                      ▶ Durchschnitt {geld(basis.lage.schnitt)} {cur} verwenden
+                    </button>
+                  </div>
+                ) : (
+                  <div className="muted" style={{ marginTop: 8, lineHeight: 1.5 }}>
+                    Auch über mehrere Jahre kommt kein tragfähiger positiver Cashflow zusammen. Dann ist ein DCF hier das
+                    falsche Werkzeug — nicht ungenau, sondern unanwendbar. Für solche Firmen bewertet man üblicherweise über
+                    Umsatzmultiplikatoren oder wartet, bis der Cashflow dreht. Ein eigener Schätzwert lässt sich unten
+                    eintragen, dann rechnet die Simulation damit.
+                  </div>
+                )}
+              </div>
+            )}
+            <div style={{ marginTop: 10 }}>{handFeld}</div>
+          </>) : basis.fehler ? (<>
             <div className="note note--warn">{basis.fehler}</div>
             {basis.brauchtHand && (
               <div style={{ marginTop: 10 }}>
