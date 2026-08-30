@@ -67,6 +67,9 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 // prueft, die im Betrieb verwendet werden. Weichen die Dateien auseinander,
 // diagnostiziert man sonst etwas anderes als das, was tatsaechlich laeuft.
 const { timeseriesUrl, parseTimeseries } = require("./lib/fundamentals");
+// Dieselbe Datei, die auch der Browser laedt - so prueft die Diagnose GENAU
+// den Feed und den Parser, die im Betrieb verwendet werden.
+const Quakes = require("../../assets/js/geo-quakes.js");
 const UCDP_TOKEN = process.env.UCDP_ACCESS_TOKEN || "";
 const FRED_ENV_KEY = process.env.FRED_API_KEY || "";
 const PROBES = [
@@ -215,6 +218,28 @@ const PROBES = [
     label: "Yahoo Fundamentaldaten ALT (quoteSummary, AAPL) – Vergleichsprobe, Leerlauf hier ist der bekannte Befund",
     url: "https://query1.finance.yahoo.com/v10/finance/quoteSummary/AAPL?modules=cashflowStatementHistory",
     headers: { "Accept": "application/json", "User-Agent": UA },
+  },
+  // --- USGS-Erdbeben: die einzige Geo-Quelle mit echten Koordinaten ---
+  //     Schluessellos, deshalb muss hier nichts konfiguriert sein. Die Probe
+  //     prueft INHALTLICH, ob verwertbare Punkte herauskommen - eine Antwort
+  //     mit HTTP 200 und leerer Feature-Liste waere sonst faelschlich gruen.
+  {
+    key: "usgs-erdbeben",
+    label: "USGS Erdbeben M4.5+, letzte 7 Tage (Weltkarte F6) – ohne Zugangsschluessel",
+    url: Quakes.feedUrl("4.5", "week"),
+    headers: { "Accept": "application/json", "User-Agent": UA },
+    expect: (body) => {
+      let json;
+      try { json = JSON.parse(body); } catch (_) { return "Antwort ist kein JSON"; }
+      const punkte = Quakes.parseQuakes(json);
+      if (!punkte.length) {
+        const roh = json && Array.isArray(json.features) ? json.features.length : "kein features-Array";
+        return `keine verwertbaren Erdbeben erkannt (Rohdaten: ${roh}) - Antwortform geaendert?`;
+      }
+      const ohneKoord = punkte.filter((q) => q.lon == null || q.lat == null).length;
+      if (ohneKoord) return `${ohneKoord} Punkte ohne Koordinaten - die waeren auf der Karte nicht platzierbar`;
+      return null;
+    },
   },
   {
     key: "gdelt",
