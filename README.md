@@ -263,29 +263,51 @@ Ob die Quelle live liefert, zeigt die F9-Diagnose: die Probe `usgs-erdbeben`
 prueft **inhaltlich**, ob verwertbare Punkte mit Koordinaten herauskommen - eine
 Antwort mit HTTP 200 und leerer Liste waere sonst faelschlich gruen.
 
-## GDELT: Fehler nennen die Ursache
+## GDELT wurde entfernt
 
-Im Betrieb stand in der Laenderliste ueberall "0 Meldungen". Das Problem war
-weniger die Zahl als die Ununterscheidbarkeit: ein AUSFALL und ein echtes
-Leerergebnis sahen identisch aus.
+Die Quelle lieferte das Nachrichtenvolumen je Land. Gemeldet war "GDELT nennt
+nie Meldungen" - in jeder Laenderzeile stand "0 Meldungen".
 
-Zwei Ursachen dafuer, beide behoben:
+Die F9-Diagnose auf der echten Instanz zeigte den Grund:
 
-1. `geopolitics.js` las die Antwort mit `res.json()`. GDELT meldet Fehler aber
-   im **Klartext** und dabei haeufig mit **HTTP 200** ("Your query was too short
-   or too long", Drosselungsmeldungen). `res.json()` warf dann nur "Unexpected
-   token" - eine Aussage ueber die Antwortform, keine ueber die Ursache. Jetzt
-   wird erst der Text gelesen, dann geparst, und im Fehlerfall steht der Anfang
-   der Antwort im Wortlaut in der Meldung. Dieselbe Lehre, die fuer ReliefWeb
-   schon gezogen war - fuer GDELT war sie nie angewandt worden.
+    GDELT (Weltlage, Nachrichtenvolumen)   kein Kontakt · 6001ms
+    GDELT Timeline (Trendverlauf)          kein Kontakt · 6000ms
 
-2. Die Function ermittelte den Fehler **je Land** korrekt, das Frontend warf ihn
-   aber weg und zeigte pauschal "Zeitbudget erreicht". Jetzt steht der echte
-   Fehlertext im Detailpanel, und ueber der Karte erscheint eine Sammelmeldung
-   ("GDELT: 18 von 20 Laendern ohne Ergebnis - ..."), sobald ueberhaupt ein Land
-   fehlschlaegt. Faellt die Mehrheit aus, klappt zusaetzlich die Diagnose auf.
+Kein 429, keine kaputte Antwort - der Host antwortet aus der Netlify-Region
+binnen sechs Sekunden ueberhaupt nicht, waehrend USGS in 246 ms, Yahoo in
+281 ms und Frankfurter in 279 ms antworteten. Serverseitig war dagegen nichts
+auszurichten: Netlify bricht synchrone Functions nach 10 s ab.
 
-Ebenfalls getrennt: eine Antwort **ohne** `articles`-Feld ist ein Fehler
-(Antwortform unerwartet), ein **leeres** `articles`-Feld ist ein gueltiges
-Ergebnis (nichts gefunden). Beides als "0 Meldungen" zu zeigen verwischt genau
-den Unterschied, der bei der Fehlersuche zaehlt.
+Danach wurde derselbe Aufruf im **Browser** versucht - auch dort ohne Antwort.
+**Zwei unabhaengige Netze, dasselbe Ergebnis.** Ausgeschlossen wurden vorher:
+
+- die Abfragesyntax (gegen die GDELT-Doku geprueft, war korrekt)
+- ein HTTPS-Problem (die DOC-API liefert laut Anbieter ueber HTTP *und* HTTPS)
+- eine bekannte Stoerung (keine gefunden)
+
+Eine Quelle, die aus keinem erreichbaren Netz antwortet, ist fuer diese
+Anwendung tot. Sie stand nur noch als "0 Meldungen" in jeder Zeile - eine
+Anzeige, die wie ein Ergebnis aussah und keines war. Ein toter Codepfad, der
+Zahlen vortaeuscht, ist schaedlicher als eine fehlende Funktion, die sich
+benennt.
+
+### Was F6 jetzt zeigt
+
+- **UCDP** ist die einzige Konfliktquelle. Die Stufe ist damit zweiwertig:
+  "hoch" (UCDP fuehrt ein Ereignis) oder "keine" (geprueft, kein Ereignis).
+  Die frueheren Zwischenstufen kamen ausschliesslich aus dem
+  Nachrichtenvolumen; sie weiter anzuzeigen waere erfundene Genauigkeit.
+- **Ohne UCDP-Token gibt es gar kein Signal.** Dann steht bei jedem Land
+  `UNBEKANNT`, nicht `KEINE` - und der Reiter sagt oben ausdruecklich, dass
+  keine Konfliktdaten vorliegen. Der Unterschied ist der Kern der Anzeige:
+  "keine" hiesse geprueft und ruhig, "unbekannt" heisst gar nicht geprueft.
+  Eine leere Weltlage als Entwarnung darzustellen waere schlimmer als gar
+  keine Anzeige.
+- **Die USGS-Erdbeben auf der Karte sind davon unberuehrt** - sie waren mit
+  246 ms die schnellste Quelle der ganzen Diagnose und brauchen keinen
+  Schluessel.
+
+Mit dem Wegfall entfielen auch Wellen und Zeitbudget der Function: die gab es
+nur fuer den Abruf je Land. UCDP ist ein einziger Aufruf, danach ist der Bericht
+fertig - der Zustand "nicht geprueft (Zeitbudget erreicht)" kann gar nicht mehr
+eintreten.

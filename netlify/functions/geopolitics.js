@@ -1,20 +1,30 @@
 // Netlify Function: /.netlify/functions/geopolitics
 //
-// Weltlage-Uebersicht (F6) aus zwei kostenlosen Quellen:
-//   - UCDP (Uppsala Conflict Data Program): Konfliktereignisse je Land -
-//     liefert die dynamische Laenderliste (Hauptquelle). Kostenlos, verlangt
-//     aber seit Kurzem einen Zugangstoken (UCDP_ACCESS_TOKEN, siehe unten);
-//     ohne ihn laeuft F6 auf der festen Liste aus geo-countries.js weiter
-//   - GDELT: Nachrichtenvolumen zu Konflikt-Schlagwoertern je Beobachtungsland
-//     (mehrere Aufrufe, gestaffelt in Wellen mit hartem Zeitbudget)
+// Weltlage-Uebersicht (F6). EINE Quelle:
+//   - UCDP (Uppsala Conflict Data Program): Konfliktereignisse je Land.
+//     Kostenlos, verlangt aber einen Zugangstoken (UCDP_ACCESS_TOKEN, siehe
+//     unten). Ohne ihn liefert diese Function nur die feste Laenderliste aus
+//     geo-countries.js ohne jede Einstufung - und sagt das auch.
 //
-// WARUM NUR NOCH UCDP UND GDELT: Frueher lief hier zusaetzlich ReliefWeb
-// (UN OCHA). Die Live-Diagnose auf der echten Netlify-Instanz zeigte, dass
-// ReliefWeb v2 einen VORAB REGISTRIERTEN Appnamen verlangt (HTTP 403 "not using
-// an approved appname"). Das ist eine externe Registrierung, die kein Code-Fix
-// umgehen kann - die Quelle war damit dauerhaft blockiert und wurde entfernt
-// statt als toter Codepfad mitgeschleppt zu werden. UCDP passt inhaltlich
-// ohnehin besser (Konfliktdaten statt allgemeiner Katastrophenmeldungen).
+// WARUM NUR NOCH UCDP - zwei Quellen wurden gemessen und entfernt:
+//
+//   ReliefWeb (UN OCHA) verlangt einen VORAB REGISTRIERTEN Appnamen
+//   (Live-Beleg: HTTP 403 "not using an approved appname"). Externe
+//   Registrierung, die kein Code-Fix umgehen kann.
+//
+//   GDELT lieferte das Nachrichtenvolumen je Land. In der Live-Diagnose auf der
+//   echten Instanz: "kein Kontakt · 6001ms" - der Host antwortet aus der
+//   Netlify-Region binnen sechs Sekunden ueberhaupt nicht, waehrend USGS in
+//   246ms und Yahoo in 281ms antworteten. Kein 429, keine kaputte Antwort, und
+//   die Abfragesyntax wurde gegen die GDELT-Doku geprueft und war korrekt.
+//   Danach wurde derselbe Aufruf im BROWSER des Nutzers versucht - auch dort
+//   ohne Antwort. Zwei unabhaengige Netze, dasselbe Ergebnis: die Quelle ist
+//   fuer diese Anwendung nicht erreichbar.
+//
+//   Sie stand deshalb nur noch als "0 Meldungen" in jeder Laenderzeile - eine
+//   Anzeige, die wie ein Ergebnis aussah und keines war. Genau das war der
+//   gemeldete Fehler. Ein dauerhaft toter Codepfad, der Zahlen vortaeuscht, ist
+//   schaedlicher als eine fehlende Funktion, die sich benennt.
 //
 // Die APIs sind aus der Entwicklungsumgebung nicht erreichbar (Egress-Richtlinie
 // blockt CONNECT mit 403), deshalb wurden Versionsschema und Antwortformat aus
@@ -34,29 +44,21 @@ const { fetchWithTimeout } = require("./lib/providers");
 const { flagEmoji, buildWatchlist } = require("./lib/geo-countries");
 
 const CACHE = new Map(); const TTL = 20 * 60 * 1000; // 20 Min - Weltlage aendert sich nicht sekuendlich
-// Wellenbreite und Einzeltimeout haengen an der Laenge der Beobachtungsliste:
-// 20 Laender / 7 je Welle = 3 Wellen a 2500ms = 7500ms - das passt in das
-// Gesamtbudget, auch wenn UCDP mangels Token sofort uebersprungen wird und
-// GDELT damit praktisch die ganze Zeit bekommt. Mit den frueheren Werten
-// (5 je Welle, 3000ms) waeren es 4 Wellen und 12000ms gewesen: ein Drittel der
-// Laender waere dauerhaft "nicht geprueft" geblieben. Ein Test rechnet das nach.
-const WAVE = 7;
-const PER_REQUEST_TIMEOUT = 2500; // GDELT je Land
+
+// Eigenes Teilbudget fuer die UCDP-Versionssuche. Die Kandidatenliste ist
+// bewusst lang (die neuesten Monatsversionen existieren noch nicht und
+// antworten mit billigen 404ern) - ohne diese Schranke koennte allein die Suche
+// das Funktionslimit reissen.
 const UCDP_TIMEOUT = 2500;        // je einzelnem Versions-Versuch
 const UCDP_MIN_ATTEMPT_MS = 400;  // darunter lohnt kein weiterer Versuch mehr
-// Eigenes Teilbudget fuer die Versionssuche. Die Kandidatenliste ist bewusst
-// lang (die neuesten Monatsversionen existieren noch nicht und antworten mit
-// billigen 404ern) - ohne diese Schranke koennte allein die Suche das
-// Gesamtbudget aufbrauchen und GDELT gar nicht mehr zum Zug kommen lassen.
 const UCDP_BUDGET_MS = 2500;
 const UCDP_ANNAHME_MS_JE_VERSUCH = 350; // Erfahrungswert fuer ein 404, nur fuer die Budget-Pruefung im Test
-// Deckt die UCDP-Versionssuche UND alle GDELT-Wellen ZUSAMMEN ab, mit
-// Sicherheitsabstand unter Netlifys 10s-Standardlimit fuer synchrone Functions.
-// Die Frist laeuft ab Funktionsstart, nicht erst ab der ersten Quelle: sonst
-// koennte die Summe aus Quellenabruf und GDELT-Budget das Funktionslimit
-// reissen, Netlify braeche die Function hart ab und der Client saehe nur einen
-// generischen Fetch-Fehler - was wie ein API-Ausfall aussieht, aber ein
-// serverseitiges Timeout ist.
+
+// Gesamtfrist mit Sicherheitsabstand unter Netlifys 10s-Grenze fuer synchrone
+// Functions. Seit UCDP die einzige Quelle ist, bleibt davon fast alles
+// ungenutzt - es ist ein einziger Aufruf. Die Frist bleibt trotzdem, damit eine
+// haengende UCDP-Antwort die Function nicht in Netlifys harten Abbruch laufen
+// laesst, bei dem der Aufrufer gar keinen Fehlertext mehr saehe.
 const FUNCTION_BUDGET_MS = 8500;
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
@@ -156,17 +158,11 @@ function findUcdpEvents(node, depth) {
 // Wie viele Monate rueckwaerts gesucht wird. Die Zahl ist an das Zeitbudget
 // gekoppelt und nicht frei waehlbar: jeder Versuch kostet einen Netzwerkaufruf
 // (~200-400ms fuer ein 404), und die Summe muss in UCDP_BUDGET_MS passen -
-// sonst wird die Suche mittendrin abgeschnitten UND GDELT bekommt zu wenig Zeit
-// fuer die Laenderwellen. 8 Monate decken auch eine laengere
-// Veroeffentlichungspause ab; im Normalfall trifft ohnehin der zweite Versuch
-// (der laufende Monat ist meist noch nicht veroeffentlicht, der Vormonat schon).
-// Ein Test prueft, dass Listenlaenge und Budget zueinander passen.
-//
-// Die 6 ergeben sich aus zwei Bedingungen, die sich gegenseitig einschnueren:
-//   (a) alle Versuche muessen in UCDP_BUDGET_MS passen  -> 7 URLs x 350ms = 2450ms
-//   (b) danach muss GDELT noch zwei volle Wellen schaffen -> 8500 - 2500 = 6000ms
-// Mehr Monate gingen nur, wenn man das Gesamtbudget anhebt - und das steht
-// wegen Netlifys 10s-Limit nicht zur Verfuegung.
+// sonst wird die Suche mittendrin abgeschnitten. 6 Monate decken auch eine
+// laengere Veroeffentlichungspause ab; im Normalfall trifft ohnehin der zweite
+// Versuch (der laufende Monat ist meist noch nicht veroeffentlicht, der
+// Vormonat schon). Die Zahl ergibt sich aus dem Teilbudget: 7 URLs x 350ms =
+// 2450ms passen in UCDP_BUDGET_MS. Ein Test prueft das nach.
 const UCDP_MONTHS_BACK = 6;
 function ucdpCandidateVersions(now, monthsBack) {
   const out = [];
@@ -209,8 +205,10 @@ let UCDP_LAST_GOOD_URL = null;
 // vergeben: man schreibt eine kurze Mail an mertcan.yilmaz@pcr.uu.se mit Name,
 // Zugehoerigkeit und Verwendungszweck.
 //
-// Ohne Token wird UCDP gar nicht erst angefragt. Ein garantierter 401 kostet
-// nur Zeit aus dem knappen Budget, die GDELT fuer die Laenderabfragen braucht.
+// Ohne Token wird UCDP gar nicht erst angefragt: ein garantierter 401 kostet
+// nur Zeit und liefert nichts. Seit UCDP die einzige Quelle ist, heisst das
+// zugleich, dass F6 dann ueberhaupt keine Einstufung mehr hat - die Function
+// meldet das ausdruecklich (hatQuelle=false), statt "keine Gefahr" vorzugaukeln.
 const UCDP_TOKEN = process.env.UCDP_ACCESS_TOKEN || "";
 
 async function fetchUcdp(deadline) {
@@ -228,7 +226,7 @@ async function fetchUcdp(deadline) {
     // Hartes Zeitbudget: Die Kandidatenliste ist bewusst lang (die neuesten
     // Versionen existieren noch nicht und liefern billige 404er). Ohne diese
     // Schranke wuerde ein haengender Host die Liste durchlaufen und das
-    // Gesamtbudget der Function reissen, bevor GDELT ueberhaupt drankommt.
+    // Gesamtbudget der Function reissen.
     const rest = deadline ? deadline - Date.now() : UCDP_TIMEOUT;
     if (rest < UCDP_MIN_ATTEMPT_MS) { attempts.push(`Zeitbudget nach ${versuche} Versuchen erreicht`); break; }
     versuche++;
@@ -280,130 +278,18 @@ async function fetchUcdp(deadline) {
   throw new Error(attempts.length ? attempts.join(" | ") : `keine der ${versuche} geprueften UCDP-Versionen existiert`);
 }
 
-// --- GDELT: Nachrichtenvolumen zu Konflikt-Schlagwoertern je Land ----------
-const CONFLICT_KEYWORDS = "(war OR conflict OR military OR clashes OR offensive OR strikes OR ceasefire OR attack)";
-const GDELT_HEADLINES_TIMESPAN = "7d";  // vorher 3d - mehr Kontext, nicht nur die letzten 72h
-const GDELT_MAXRECORDS = 25;            // vorher 10 - genauere Artikelanzahl fuer die Risikostufe
-const GDELT_HEADLINES_SHOWN = 8;        // vorher 3 - mehr Schlagzeilen im Detailpanel
-const GDELT_TIMELINE_TIMESPAN = "2w";   // eigener, laengerer Zeitraum fuer den Trendverlauf
-
-// Holt eine GDELT-Antwort und gibt sie als geparstes JSON zurueck.
+// Einstufung. Nach dem Wegfall von GDELT bleibt UCDP als einziges Signal -
+// die Stufe ist damit zweiwertig statt fuenfstufig.
 //
-// WARUM NICHT EINFACH res.json(): GDELT meldet Fehler im KLARTEXT und dabei
-// haeufig mit HTTP 200 - etwa "Your query was too short or too long" oder eine
-// Drosselungsmeldung. res.json() wirft dann nur "Unexpected token E in JSON",
-// und genau diese Meldung landete bisher als Fehlertext beim Land. Damit stand
-// dort eine Aussage ueber die Antwortform, aber keine ueber die Ursache - man
-// konnte nicht unterscheiden zwischen "Abfrage abgelehnt", "gedrosselt" und
-// "GDELT antwortet gerade gar nicht".
-//
-// Deshalb erst als Text lesen, dann selbst parsen und im Fehlerfall den ANFANG
-// DER ANTWORT mitgeben. Dieselbe Lehre, die fuer ReliefWeb schon gezogen wurde
-// (dort wurde der Antwortkoerper bei 4xx mitgenommen) - fuer GDELT war sie nie
-// angewandt worden.
-async function gdeltJson(url, was) {
-  const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } }, PER_REQUEST_TIMEOUT);
-  const text = await res.text();
-  const auszug = String(text || "").slice(0, 200).replace(/\s+/g, " ").trim();
-  if (!res.ok) throw new Error(`${was} HTTP ${res.status}${auszug ? " – " + auszug : ""}`);
-  if (!text) throw new Error(`${was}: leere Antwort (HTTP ${res.status})`);
-  try {
-    return JSON.parse(text);
-  } catch (_) {
-    // Kein JSON: fast immer eine Klartextmeldung von GDELT selbst.
-    throw new Error(`${was}: kein JSON, GDELT antwortete "${auszug}"`);
-  }
-}
-
-// Sucht rekursiv nach dem Array der Zeitreihenpunkte (Datum+Wert), unabhaengig
-// vom Antwort-Umschlag - gleiche Taktik wie bei UCDP/DBnomics, da die genaue
-// Form der GDELT-Timeline-Antwort hier nicht live geprueft werden konnte.
-// Erkennungsmerkmal "date"+"value" grenzt sauber gegen die Artikel-Antwort ab
-// (die hat "title"/"url", keine "date"/"value"-Paare).
-function findGdeltTimelineData(node, depth) {
-  if (Array.isArray(node)) {
-    if (node.length && node.every((x) => x && typeof x === "object" && "date" in x && "value" in x)) return node;
-    for (const item of node) { const hit = findGdeltTimelineData(item, (depth || 0) + 1); if (hit) return hit; }
-    return null;
-  }
-  if (!node || typeof node !== "object" || (depth || 0) > 4) return null;
-  for (const k of Object.keys(node)) { const hit = findGdeltTimelineData(node[k], (depth || 0) + 1); if (hit) return hit; }
-  return null;
-}
-
-// Artikelvolumen als Zeitreihe (mode=timelinevol) - zeigt, ob sich eine Lage
-// gerade zuspitzt oder abklingt, statt nur eine Momentaufnahme zu liefern.
-// Best-effort: schlaegt diese Abfrage fehl, bekommt das Land trotzdem seine
-// Schlagzeilen (siehe fetchGdeltFor) - ein leerer Trend ist kein Grund, die
-// ganze Laenderauswertung scheitern zu lassen.
-async function fetchGdeltTimelineFor(country) {
-  const q = `"${country.name}" ${CONFLICT_KEYWORDS}`;
-  const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&mode=timelinevol&format=json&timespan=${GDELT_TIMELINE_TIMESPAN}`;
-  const json = await gdeltJson(url, "GDELT-Timeline");
-  const points = findGdeltTimelineData(json, 0);
-  if (!points) return [];
-  return points
-    .map((p) => ({ date: String(p.date || "").slice(0, 8), value: typeof p.value === "number" ? p.value : parseFloat(p.value) }))
-    .filter((p) => p.date && !isNaN(p.value));
-}
-
-// mitTrend steuert, ob zusaetzlich der Zeitverlauf geholt wird.
-//
-// Warum nicht immer: der Trendabruf ist eine ZWEITE Anfrage je Land. Bei einer
-// Welle von fuenf Laendern waeren das zehn gleichzeitige Anfragen an GDELT
-// statt fuenf - gegen eine oeffentliche API, die bei aggressiver Nutzung
-// drosselt. Das war eine Verschlechterung, die mit der Trend-Funktion
-// unbeabsichtigt hereinkam.
-//
-// Der Trend wird deshalb nur fuer Laender geholt, die eine offizielle Quelle
-// als Konfliktland fuehrt. Genau dort ist die Frage "spitzt es sich zu oder
-// klingt es ab?" interessant; fuer ein ruhiges Land waere die Kurve ohnehin
-// flach. Das haelt die Gleichzeitigkeit nahe am alten Wert und macht die
-// Wellen schneller - wovon wiederum das Zeitbudget profitiert.
-async function fetchGdeltFor(country, mitTrend) {
-  const q = `"${country.name}" ${CONFLICT_KEYWORDS}`;
-  const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&mode=artlist&maxrecords=${GDELT_MAXRECORDS}&timespan=${GDELT_HEADLINES_TIMESPAN}&format=json&sort=datedesc`;
-
-  // Wird der Trend geholt, laeuft er gleichzeitig mit der Artikelliste - beide
-  // teilen sich PER_REQUEST_TIMEOUT, damit sich die Laufzeit je Land nicht
-  // verdoppelt. Der Trend ist best-effort (allSettled), die Artikelliste bleibt
-  // hart (wirft bei Fehler).
-  const [articlesResult, timelineResult] = await Promise.allSettled([
-    (async () => {
-      const json = await gdeltJson(url, "GDELT");
-      // Kein articles-Feld ist etwas anderes als ein leeres articles-Feld:
-      // Ersteres heisst "Antwortform unerwartet", Letzteres "nichts gefunden".
-      // Beides als 0 Meldungen zu zeigen, verwischt genau den Unterschied, der
-      // bei der Fehlersuche zaehlt.
-      if (!json || !Array.isArray(json.articles)) {
-        throw new Error(`GDELT: unerwartete Antwortform, Schlüssel: ${json && typeof json === "object" ? Object.keys(json).slice(0, 8).join(",") : typeof json}`);
-      }
-      const articles = json.articles.filter((a) => a && a.title && a.url);
-      // count = tatsaechliches Artikelvolumen (fuer die Risikostufe), headlines =
-      // nur die ersten GDELT_HEADLINES_SHOWN zur Anzeige - beide bewusst getrennt,
-      // damit das Kappen der Anzeige nicht versehentlich auch die Score-Berechnung deckelt.
-      return {
-        count: articles.length,
-        headlines: articles.slice(0, GDELT_HEADLINES_SHOWN).map((a) => ({ title: a.title, url: a.url, date: a.seendate ? String(a.seendate).slice(0, 8) : null, source: a.domain || "" })),
-      };
-    })(),
-    mitTrend ? fetchGdeltTimelineFor(country) : Promise.resolve([]),
-  ]);
-
-  if (articlesResult.status === "rejected") throw articlesResult.reason;
-  return {
-    count: articlesResult.value.count,
-    headlines: articlesResult.value.headlines,
-    trend: timelineResult.status === "fulfilled" ? timelineResult.value : [],
-  };
-}
-
-function computeLevel(gdeltCount, officialActive) {
-  if (officialActive && gdeltCount >= 5) return "kritisch";
-  if (officialActive || gdeltCount >= 5) return "hoch";
-  if (gdeltCount >= 2) return "mittel";
-  if (gdeltCount >= 1) return "niedrig";
-  return "keine";
+// Das ist bewusst so und wird NICHT durch einen Ersatzwert kaschiert: Die
+// frueheren Zwischenstufen (mittel/niedrig) kamen ausschliesslich aus dem
+// Nachrichtenvolumen. Sie weiter anzuzeigen, ohne dass es die Quelle noch
+// gibt, waere eine erfundene Genauigkeit. Ohne UCDP-Token gibt es gar kein
+// Signal - dann liefert die Function "unbekannt", nicht "keine": Letzteres
+// hiesse "geprueft und ruhig", Ersteres "nicht geprueft".
+function computeLevel(ucdpActive, hatQuelle) {
+  if (!hatQuelle) return "unbekannt";
+  return ucdpActive ? "hoch" : "keine";
 }
 
 async function buildReport() {
@@ -412,56 +298,37 @@ async function buildReport() {
   const deadline = Date.now() + FUNCTION_BUDGET_MS;
 
   let ucdpByCountry = new Map(); let ucdpError = null;
-  // Eigenes Teilbudget, zusaetzlich an der Gesamtfrist gedeckelt: die
-  // Versionssuche darf niemals so lange laufen, dass GDELT leer ausgeht.
   const ucdpDeadline = Math.min(deadline, Date.now() + UCDP_BUDGET_MS);
   try { ucdpByCountry = await fetchUcdp(ucdpDeadline); } catch (e) { ucdpError = String(e && e.message || e); }
 
-  // UCDP ist die einzige dynamische Quelle: was es meldet, ergaenzt die feste
-  // Beobachtungsliste. Faellt es aus (kein Token, Ausfall), bleibt die feste
-  // Liste - GDELT laeuft davon unabhaengig weiter.
+  // Mit dem Wegfall von GDELT entfallen auch die Wellen und das Zeitbudget:
+  // die brauchte es NUR fuer den Abruf je Land. UCDP ist ein einziger Aufruf,
+  // danach ist der Bericht fertig. Damit verschwindet auch der Zustand
+  // "nicht geprueft (Zeitbudget erreicht)" - er kann gar nicht mehr eintreten.
   const dynamicCountries = new Map(ucdpByCountry);
-
   const watchlist = buildWatchlist(Array.from(dynamicCountries.values()));
-  const out = {};
 
-  for (let i = 0; i < watchlist.length; i += WAVE) {
-    // Nicht nur pruefen ob das Budget JETZT schon ueberschritten ist, sondern ob
-    // eine weitere Welle (die selbst bis zu PER_REQUEST_TIMEOUT dauern darf) noch
-    // hineinpasst - sonst startet die letzte Welle knapp vor der Deadline und
-    // reisst das Gesamtbudget trotzdem.
-    if (Date.now() + PER_REQUEST_TIMEOUT > deadline) {
-      for (const c of watchlist.slice(i)) {
-        const dyn = dynamicCountries.get(c.iso3) || null;
-        out[c.iso3] = baseEntry(c, dyn, null, "nicht geprüft (Zeitbudget erreicht)");
-      }
-      break;
-    }
-    const wave = watchlist.slice(i, i + WAVE);
-    const settled = await Promise.all(wave.map(async (c) => {
-      const dyn = dynamicCountries.get(c.iso3) || null;
-      // Trendverlauf nur fuer Laender, die eine offizielle Quelle als
-      // Konfliktland fuehrt - siehe Begruendung bei fetchGdeltFor.
-      const mitTrend = !!(dyn && dyn.ucdpActive);
-      try { return { c, dyn, gdelt: await fetchGdeltFor(c, mitTrend) }; }
-      catch (e) { return { c, dyn, gdelt: null, err: String(e && e.message || e) }; }
-    }));
-    for (const r of settled) out[r.c.iso3] = baseEntry(r.c, r.dyn, r.gdelt, r.err || null);
+  // Traegt UCDP ueberhaupt? Ohne Token oder bei Ausfall gibt es kein Signal -
+  // dann sind alle Laender "unbekannt" statt "keine". Der Unterschied zaehlt:
+  // "keine" hiesse geprueft und ruhig.
+  const hatQuelle = !ucdpError;
+
+  const out = {};
+  for (const c of watchlist) {
+    const dyn = dynamicCountries.get(c.iso3) || null;
+    out[c.iso3] = baseEntry(c, dyn, hatQuelle);
   }
 
-  return { countries: out, ucdpError, generatedAt: new Date().toISOString() };
+  return { countries: out, ucdpError, hatQuelle, generatedAt: new Date().toISOString() };
 }
 
-function baseEntry(c, dyn, gdelt, error) {
+function baseEntry(c, dyn, hatQuelle) {
   const ucdpActive = !!(dyn && dyn.ucdpActive);
-  const gdeltCount = gdelt ? gdelt.count : 0;
   return {
     iso3: c.iso3, iso2: c.iso2 || (dyn && dyn.iso2) || null, name: c.name || (dyn && dyn.name) || c.iso3,
     flag: flagEmoji(c.iso2 || (dyn && dyn.iso2)),
-    level: gdelt === null && error ? "nicht geprüft" : computeLevel(gdeltCount, ucdpActive),
-    gdeltCount, headlines: gdelt ? gdelt.headlines : [], gdeltTrend: gdelt ? gdelt.trend : [],
+    level: computeLevel(ucdpActive, hatQuelle),
     ucdpActive, ucdpType: dyn ? dyn.ucdpType : null, ucdpDate: dyn ? dyn.ucdpDate : null,
-    error: error || null,
   };
 }
 
@@ -483,4 +350,4 @@ exports.handler = async (event) => {
 };
 
 // Fuer Tests: Einzelfunktionen ohne HTTP-Handler-Wrapper zugaenglich machen.
-exports._internal = { computeLevel, baseEntry, buildReport, ucdpLookupCountry, findUcdpEvents, fetchUcdp, findGdeltTimelineData, ucdpCandidateVersions, ucdpUrls, UCDP_BUDGET_MS, UCDP_ANNAHME_MS_JE_VERSUCH, FUNCTION_BUDGET_MS, PER_REQUEST_TIMEOUT, WAVE };
+exports._internal = { computeLevel, baseEntry, buildReport, ucdpLookupCountry, findUcdpEvents, fetchUcdp, ucdpCandidateVersions, ucdpUrls, UCDP_BUDGET_MS, UCDP_ANNAHME_MS_JE_VERSUCH, FUNCTION_BUDGET_MS };

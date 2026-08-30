@@ -524,18 +524,6 @@ function VolumeChart({ series }) {
     </svg>
   );
 }
-function GdeltTrendChart({ data }) {
-  if (!data || data.length < 2) return null;
-  const w = 600, h = 44;
-  const vals = data.map((d) => d.value);
-  const max = Math.max(...vals) || 1;
-  const bw = w / data.length;
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: 44, display: "block", marginTop: 4 }} preserveAspectRatio="none">
-      {data.map((d, i) => <rect key={i} x={i * bw} y={h - (d.value / max) * h} width={Math.max(bw - 1, 0.5)} height={(d.value / max) * h} fill={C.orange} opacity="0.55" />)}
-    </svg>
-  );
-}
 function RSIChart({ vals }) {
   const pts = vals.map((v, i) => (v == null ? null : [i, v])).filter(Boolean);
   if (pts.length < 3) return null;
@@ -861,7 +849,7 @@ function DiagPanel({ diag, diagBusy, diagErr, runDiag }) {
       style={{ marginBottom: 8 }}
     >
       {!diag && !diagBusy && !diagErr && (
-        <div className="muted">Fragt jede Quelle (FRED USA+Euro-Raum, UCDP, GDELT, Yahoo, Stooq, Frankfurter) einzeln ab und zeigt den echten Statuscode samt Antworttext. Dauert bis zu 30 Sekunden.</div>
+        <div className="muted">Fragt jede Quelle (FRED USA+Euro-Raum, UCDP, USGS, Yahoo, Stooq, Frankfurter) einzeln ab und zeigt den echten Statuscode samt Antworttext. Dauert bis zu 30 Sekunden.</div>
       )}
       {diagBusy && <div className="muted">Prüfe alle Quellen nacheinander… das dauert bis zu 30 Sekunden.</div>}
       {diagErr && <div className="note note--err">{diagErr}</div>}
@@ -948,8 +936,7 @@ function GeoWorldMap({ geo, geoSel, setGeoSel }) {
   const [bebenErr, setBebenErr] = useState(null);
 
   // Erdbeben des USGS: die einzige Geo-Quelle hier mit echten KOORDINATEN.
-  // UCDP nennt Laendernamen, GDELT zaehlt Artikel je Land - beides laesst sich
-  // nur flaechig einfaerben. Direkt aus dem Browser abgerufen (der USGS setzt
+  // UCDP nennt nur Laendernamen - damit laesst sich nur flaechig einfaerben. Direkt aus dem Browser abgerufen (der USGS setzt
   // CORS-Kopfzeilen), aus zwei Gruenden:
   //   1. geopolitics.js laeuft schon am Anschlag seines Zeitbudgets.
   //   2. So erscheinen die Beben auch dann, wenn diese Function ganz ausfaellt.
@@ -1626,49 +1613,40 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
   const countries = geo ? Object.values(geo.countries) : [];
   const sorted = countries.slice().sort((a, b) => {
     const d = geoLevelMeta(b.level).order - geoLevelMeta(a.level).order;
-    return d !== 0 ? d : b.gdeltCount - a.gdeltCount;
+    return d !== 0 ? d : a.name.localeCompare(b.name);
   });
   const selCountry = geoSel ? countries.find((c) => c.iso3 === geoSel) : null;
 
   return (
     <div className="page">
       <div className="toolbar">
-        <span className="muted">Geopolitische Risikoübersicht · GDELT (Nachrichtenvolumen) + UCDP (Konfliktdaten)</span>
+        <span className="muted">Geopolitische Risikoübersicht · UCDP (Konfliktdaten)</span>
         <div className="spacer" />
         <button className="btn btn--ghost" onClick={loadGeo} disabled={geoBusy}>{geoBusy ? "…" : "↻ AKTUALISIEREN"}</button>
       </div>
 
       <div className="note" style={{ marginBottom: 8 }}>
         <div>Beobachtete Länder: aktive UCDP-Konfliktländer + eine von Hand kuratierte, kurze Liste geopolitisch dauerhaft relevanter Staaten (max. 20). <b style={{ color: C.text }}>Keine erschöpfende Weltabdeckung.</b></div>
-        <div>Stufe kombiniert: GDELT-Artikelvolumen (Konflikt-Schlagwörter, 7 Tage) + ob UCDP aktuell einen Konflikt für das Land führt. {geo?.generatedAt && <span>Stand: {new Date(geo.generatedAt).toLocaleString("de-DE")}</span>}</div>
+        <div>Stufe: ob das Uppsala Conflict Data Program für das Land ein aktuelles Konfliktereignis führt. {geo?.generatedAt && <span>Stand: {new Date(geo.generatedAt).toLocaleString("de-DE")}</span>}</div>
         {/* Zwei verschiedene Dinge, die nicht gleich aussehen duerfen: ein
             echter Ausfall verlangt Aufmerksamkeit, eine bewusst uebersprungene
             Zusatzquelle nicht. UCDP verlangt seit Kurzem einen kostenlosen
             Zugangstoken - ohne ihn wird die Quelle absichtlich ausgelassen und
             die Laenderliste kommt vollstaendig aus der kuratierten Liste. */}
-        {(() => {
-          // GDELT-Ausfaelle zusammenfassen. Ein einzelnes fehlgeschlagenes Land
-          // faellt in der Liste nicht auf - faellt GDELT aber FLAECHENDECKEND
-          // aus, sah man bisher nur ueberall "0 Meldungen" und hielt das fuer
-          // ein leeres Ergebnis statt fuer einen Ausfall. Genau diese
-          // Verwechslung war der Anlass.
-          const laender = geo?.countries ? Object.values(geo.countries) : [];
-          const mitFehler = laender.filter((c) => c.error);
-          if (!mitFehler.length) return null;
-          // Haeufigsten Fehlertext nennen - bei einem systematischen Problem ist
-          // er fuer alle Laender derselbe und benennt die Ursache direkt.
-          const zaehler = {};
-          for (const c of mitFehler) zaehler[c.error] = (zaehler[c.error] || 0) + 1;
-          const haeufigster = Object.entries(zaehler).sort((a, b) => b[1] - a[1])[0][0];
-          return (
-            <div style={{ color: C.amber, marginTop: 3 }}>
-              ⚠ GDELT: {mitFehler.length} von {laender.length} Ländern ohne Ergebnis — {haeufigster}
+        {geo && geo.hatQuelle === false && (
+          <div className="note note--warn" style={{ marginTop: 6 }}>
+            <b>Für diesen Reiter liegen derzeit keine Konfliktdaten vor.</b> Unten steht die kuratierte Länderliste,
+            aber ohne Einstufung — alle Länder sind deshalb als <b>UNBEKANNT</b> gekennzeichnet und nicht als „keine Gefahr".
+            <div style={{ marginTop: 6 }}>
+              Grund: UCDP ist die einzige verbliebene Quelle und braucht einen kostenlosen Zugangstoken
+              (<span className="mono">UCDP_ACCESS_TOKEN</span>). Die frühere Zweitquelle GDELT wurde entfernt, nachdem sie
+              weder vom Server noch aus dem Browser erreichbar war — sie zeigte nur noch „0 Meldungen“ in jeder Zeile.
             </div>
-          );
-        })()}
+          </div>
+        )}
         {geo?.ucdpError && (/übersprungen/.test(geo.ucdpError)
-          ? <div className="muted" style={{ marginTop: 3 }}>UCDP-Konfliktdaten nicht aktiviert ({geo.ucdpError}) — die Länderauswahl kommt aus der kuratierten Liste, GDELT ist unabhängig davon aktiv.</div>
-          : <div style={{ color: C.amber, marginTop: 3 }}>⚠ UCDP nicht erreichbar ({geo.ucdpError}) — nur feste Länderliste + GDELT aktiv.</div>
+          ? <div className="muted" style={{ marginTop: 3 }}>UCDP-Konfliktdaten nicht aktiviert ({geo.ucdpError})</div>
+          : <div style={{ color: C.amber, marginTop: 3 }}>⚠ UCDP nicht erreichbar ({geo.ucdpError})</div>
         )}
       </div>
 
@@ -1680,10 +1658,7 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
           UCDPs Skip-Meldung ("übersprungen: kein Zugangstoken") ist erwartetes
           Verhalten, kein Ausfall - loest das Panel deshalb nicht aus. */}
       {(geoErr
-        || (geo?.ucdpError && !/übersprungen/.test(geo.ucdpError))
-        // Faellt GDELT bei der Mehrheit der Laender aus, ist das ein echtes
-        // Problem und keine Nachrichtenlage - dann gehoert die Diagnose sichtbar.
-        || (geo?.countries && Object.values(geo.countries).filter((c) => c.error).length * 2 > Object.keys(geo.countries).length)) && (
+        || (geo?.ucdpError && !/übersprungen/.test(geo.ucdpError))) && (
         <DiagPanel diag={diag} diagBusy={diagBusy} diagErr={diagErr} runDiag={runDiag} />
       )}
 
@@ -1701,7 +1676,7 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
                   <span style={{ fontSize: "var(--fs-2xs)", color: meta.color, fontWeight: 700, letterSpacing: 0.6 }}>{meta.label}</span>
                 </div>
                 <div style={{ color: C.white, fontSize: "var(--fs-sm)", marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.name}</div>
-                <div className="muted" style={{ marginTop: 3 }}>{c.gdeltCount} Meldungen{c.ucdpActive ? " · UCDP aktiv" : ""}</div>
+                <div className="muted" style={{ marginTop: 3 }}>{c.ucdpActive ? "UCDP: Konfliktereignis erfasst" : (c.level === "unbekannt" ? "nicht geprüft" : "kein Konfliktereignis")}</div>
               </div>
             );
           })}
@@ -1711,12 +1686,12 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
 
       {selCountry && (
         <Panel title={`${selCountry.flag} ${selCountry.name} · Details`} right={<span onClick={() => setGeoSel(null)} className="muted" style={{ cursor: "pointer" }}>× schließen</span>}>
-          {selCountry.error && (
+          {selCountry.level === "unbekannt" && (
             <div className="note note--warn" style={{ marginBottom: 8 }}>
-              GDELT-Abfrage fehlgeschlagen: {selCountry.error}
+              Für dieses Land liegt <b>keine Prüfung</b> vor — nicht „keine Gefahr". Die einzige Konfliktquelle (UCDP)
+              ist derzeit nicht aktiv; ohne sie lässt sich über die Lage nichts sagen.
             </div>
           )}
-          {selCountry.level === "nicht geprüft" && !selCountry.error && <div className="muted" style={{ marginBottom: 8 }}>Für dieses Land konnte innerhalb des Zeitbudgets keine GDELT-Abfrage abgeschlossen werden — bitte "AKTUALISIEREN" erneut versuchen.</div>}
           {selCountry.ucdpActive && (
             <div className="note note--warn" style={{ marginBottom: 10 }}>
               <div style={{ fontSize: "var(--fs-2xs)", letterSpacing: 1.2, marginBottom: 4, fontWeight: 700 }}>UCDP · KONFLIKTEREIGNIS ERFASST</div>
@@ -1724,18 +1699,14 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
               {selCountry.ucdpDate && <div className="muted" style={{ marginTop: 4 }}>{selCountry.ucdpDate}</div>}
             </div>
           )}
-          {selCountry.gdeltTrend?.length >= 2 && (<>
-            <div style={{ color: C.orange, fontSize: "var(--fs-2xs)", letterSpacing: 1.2, marginBottom: 5, fontWeight: 700 }}>GDELT · TRENDVERLAUF (2 WOCHEN)</div>
-            <GdeltTrendChart data={selCountry.gdeltTrend} />
-            <div className="muted" style={{ marginTop: 4, marginBottom: 12 }}>Artikelvolumen zu Konflikt-Schlagwörtern je Zeitpunkt · {selCountry.gdeltTrend[0].date} – {selCountry.gdeltTrend[selCountry.gdeltTrend.length - 1].date}</div>
-          </>)}
-          <div style={{ color: C.orange, fontSize: "var(--fs-2xs)", letterSpacing: 1.2, marginBottom: 5, fontWeight: 700 }}>GDELT · JÜNGSTE MELDUNGEN ({selCountry.gdeltCount} insgesamt gefunden)</div>
-          {selCountry.headlines?.length ? selCountry.headlines.map((h, i) => (
-            <div key={i} style={{ padding: "7px 0", borderBottom: i < selCountry.headlines.length - 1 ? `1px solid ${C.line}` : "none" }}>
-              <a href={h.url} target="_blank" rel="noreferrer" className="link" style={{ fontSize: "var(--fs-sm)" }}>{h.title}</a>
-              <div className="muted" style={{ marginTop: 3 }}>{h.source}{h.date ? " · " + h.date : ""}</div>
-            </div>
-          )) : <div className="muted">Keine GDELT-Meldungen zu Konflikt-Schlagwörtern in den letzten 7 Tagen.</div>}
+          {!selCountry.ucdpActive && selCountry.level !== "unbekannt" && (
+            <div className="muted">Das Uppsala Conflict Data Program führt für dieses Land derzeit kein aktuelles Konfliktereignis.</div>
+          )}
+          <div className="muted" style={{ marginTop: 10, fontSize: "var(--fs-2xs)", lineHeight: 1.5 }}>
+            Schlagzeilen zeigt dieser Reiter nicht mehr an. Sie kamen von GDELT — die Quelle war weder vom Server
+            noch aus dem Browser erreichbar und stand nur noch als „0 Meldungen“ in jeder Zeile.
+            Erdbeben auf der Karte oben kommen vom USGS und sind davon unberührt.
+          </div>
         </Panel>
       )}
     </div>
@@ -1992,7 +1963,7 @@ function App() {
   };
   useEffect(() => { if (connected && tab === "makro" && !Object.keys(macro).length) loadMacro(); }, [connected, tab]);
 
-  /* F6 WELTLAGE: Geopolitische Risikoübersicht (UCDP + GDELT) */
+  /* F6 WELTLAGE: Geopolitische Risikoübersicht (UCDP) + Erdbeben (USGS) */
   const [geo, setGeo] = useState(null); const [geoBusy, setGeoBusy] = useState(false); const [geoErr, setGeoErr] = useState("");
   const [geoSel, setGeoSel] = useState(null);
   const loadGeo = async () => {
@@ -2008,7 +1979,7 @@ function App() {
 
   /* Diagnose: fragt jede externe Datenquelle einzeln ab und zeigt, was wirklich
      zurueckkommt. Hintergrund: In der Entwicklungsumgebung sind fred.stlouisfed.org,
-     ucdpapi.pcr.uu.se und api.gdeltproject.org per Egress-Richtlinie gesperrt -
+     ucdpapi.pcr.uu.se und earthquake.usgs.gov per Egress-Richtlinie gesperrt -
      Fehler wie "UCDP nicht erreichbar" lassen sich dort nicht nachstellen.
      Auf Netlify laeuft der Aufruf dagegen echt, und dieses Panel macht den
      konkreten Grund (Statuscode + Antworttext) sichtbar. */
