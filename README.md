@@ -23,6 +23,7 @@ assets/js/                   Reine Rechenlogik, ohne JSX und ohne Babel.
   indicators.js              Chart-Indikatoren (SMA, RSI) + Zusammenfassen
                              von Balken zu groesseren Kerzen
   mc.js                      Monte-Carlo-Simulation der Bewertungs-Bandbreite
+  geo-quakes.js              USGS-Erdbeben als Punktdaten fuer die Weltkarte
   theme.js                   Farben, Formatierung, Anzeige-Metadaten
   market-data.js             Presets/Konstanten + Datenbeschaffungs-Helfer
 
@@ -222,3 +223,69 @@ Ob die Quellen live liefern, zeigt die **F9-Diagnose**: die Proben
 `yahoo-fundamentals-timeseries` (mit inhaltlicher Pruefung, ob der operative
 oder freie Cashflow tatsaechlich dabei ist) und `yahoo-fundamentals-quotesummary`
 als Vergleich.
+
+## Geodaten: warum USGS
+
+Die Weltlage (F6) hatte bis dahin **keine einzige Quelle mit Koordinaten**:
+UCDP nennt Laendernamen, GDELT zaehlt Nachrichtenartikel je Land. Auf der Karte
+liess sich damit nur flaechig einfaerben.
+
+Die USGS-Erdbeben schliessen diese Luecke - und zwar als eine der wenigen
+Quellen, die **ohne Zugangstoken, ohne registrierten Appnamen und ohne Antrag
+per Mail** auskommen. Nach UCDP (Token, 3-5 Werktage Bearbeitung) und ReliefWeb
+(genehmigter Appname, deshalb entfernt) war genau das das Auswahlkriterium: eine
+Quelle, die nicht eines Tages eine Registrierung nachschiebt.
+
+Technisches:
+
+- Abgerufen wird die **feste Zusammenfassungsdatei**
+  `.../summary/4.5_week.geojson`, nicht die Abfrage-Schnittstelle mit
+  `starttime=`. Damit entfaellt jede Datumsrechnerei in der URL - eine falsch
+  gebildete Zeitangabe liefert sonst stillschweigend ein leeres Fenster.
+- **Aus dem Browser**, nicht aus der Netlify-Function: `geopolitics.js` laeuft
+  bereits am Anschlag seines Zeitbudgets (UCDP 2500 ms + drei GDELT-Wellen a
+  2500 ms = 8500 ms unter Netlifys 10-s-Grenze). Der USGS setzt CORS-Kopfzeilen,
+  und die Laendergrenzen der Karte werden ohnehin schon direkt von einem CDN
+  geladen. Nebeneffekt: Die Beben erscheinen auch dann, wenn die
+  geopolitics-Function komplett ausfaellt.
+- **Ab Staerke 4.5, letzte 7 Tage**: weltweit rund 100-250 Beben - genug fuer
+  ein Bild, wenig genug, dass die Karte lesbar bleibt. Bei 2.5 waeren es mehrere
+  tausend und die Punktwolke saehe ueberall gleich dicht aus.
+- Der Punktradius waechst **ueberproportional** zur Magnitude. Die Skala ist
+  logarithmisch: ein M7 setzt rund 1000-mal so viel Energie frei wie ein M5 -
+  ein linearer Radius liesse schwere Beben wie eine Randnotiz aussehen.
+- Sprengungen und Steinbrucharbeiten stehen mit im Feed (`type` != `earthquake`)
+  und werden **nicht** als Erdbeben gezeigt.
+- Faellt der Abruf aus, bleibt die Karte vollstaendig funktionsfaehig und sagt
+  warum. Die Beben sind eine Ergaenzung, keine Voraussetzung.
+
+Ob die Quelle live liefert, zeigt die F9-Diagnose: die Probe `usgs-erdbeben`
+prueft **inhaltlich**, ob verwertbare Punkte mit Koordinaten herauskommen - eine
+Antwort mit HTTP 200 und leerer Liste waere sonst faelschlich gruen.
+
+## GDELT: Fehler nennen die Ursache
+
+Im Betrieb stand in der Laenderliste ueberall "0 Meldungen". Das Problem war
+weniger die Zahl als die Ununterscheidbarkeit: ein AUSFALL und ein echtes
+Leerergebnis sahen identisch aus.
+
+Zwei Ursachen dafuer, beide behoben:
+
+1. `geopolitics.js` las die Antwort mit `res.json()`. GDELT meldet Fehler aber
+   im **Klartext** und dabei haeufig mit **HTTP 200** ("Your query was too short
+   or too long", Drosselungsmeldungen). `res.json()` warf dann nur "Unexpected
+   token" - eine Aussage ueber die Antwortform, keine ueber die Ursache. Jetzt
+   wird erst der Text gelesen, dann geparst, und im Fehlerfall steht der Anfang
+   der Antwort im Wortlaut in der Meldung. Dieselbe Lehre, die fuer ReliefWeb
+   schon gezogen war - fuer GDELT war sie nie angewandt worden.
+
+2. Die Function ermittelte den Fehler **je Land** korrekt, das Frontend warf ihn
+   aber weg und zeigte pauschal "Zeitbudget erreicht". Jetzt steht der echte
+   Fehlertext im Detailpanel, und ueber der Karte erscheint eine Sammelmeldung
+   ("GDELT: 18 von 20 Laendern ohne Ergebnis - ..."), sobald ueberhaupt ein Land
+   fehlschlaegt. Faellt die Mehrheit aus, klappt zusaetzlich die Diagnose auf.
+
+Ebenfalls getrennt: eine Antwort **ohne** `articles`-Feld ist ein Fehler
+(Antwortform unerwartet), ein **leeres** `articles`-Feld ist ein gueltiges
+Ergebnis (nichts gefunden). Beides als "0 Meldungen" zu zeigen verwischt genau
+den Unterschied, der bei der Fehlersuche zaehlt.

@@ -363,6 +363,7 @@ body{font-variant-numeric:tabular-nums;}
 <script src="assets/js/indicators.js"></script>
 <script src="assets/js/market-data.js"></script>
 <script src="assets/js/mc.js"></script>
+<script src="assets/js/geo-quakes.js"></script>
 
 <!-- App-Quelltext (wird unten kontrolliert kompiliert) -->
 <script type="text/plain" id="app-src">
@@ -943,6 +944,36 @@ const GEO_MAP_SOURCES = [
 function GeoWorldMap({ geo, geoSel, setGeoSel }) {
   const [world, setWorld] = useState(null);      // null=laedt, Array=Features
   const [mapErr, setMapErr] = useState(null);    // gesetzt, wenn KEINE Quelle trug
+  const [beben, setBeben] = useState(null);      // null=laedt, [] = keine/Fehler
+  const [bebenErr, setBebenErr] = useState(null);
+
+  // Erdbeben des USGS: die einzige Geo-Quelle hier mit echten KOORDINATEN.
+  // UCDP nennt Laendernamen, GDELT zaehlt Artikel je Land - beides laesst sich
+  // nur flaechig einfaerben. Direkt aus dem Browser abgerufen (der USGS setzt
+  // CORS-Kopfzeilen), aus zwei Gruenden:
+  //   1. geopolitics.js laeuft schon am Anschlag seines Zeitbudgets.
+  //   2. So erscheinen die Beben auch dann, wenn diese Function ganz ausfaellt.
+  // Faellt der Abruf aus, bleibt die Karte vollstaendig funktionsfaehig - die
+  // Beben sind eine Ergaenzung, keine Voraussetzung.
+  useEffect(() => {
+    let cancelled = false;
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 8000);
+    (async () => {
+      try {
+        const res = await fetch(window.Quakes.feedUrl("4.5", "week"), { signal: ctrl.signal });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const gj = await res.json();
+        if (!cancelled) setBeben(window.Quakes.parseQuakes(gj));
+      } catch (e) {
+        if (!cancelled) {
+          setBeben([]);
+          setBebenErr(ctrl.signal.aborted ? "Zeitüberschreitung nach 8s" : (e && e.message) || String(e));
+        }
+      } finally { clearTimeout(to); }
+    })();
+    return () => { cancelled = true; ctrl.abort(); };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1031,12 +1062,51 @@ function GeoWorldMap({ geo, geoSel, setGeoSel }) {
               onClick={() => entry && setGeoSel(on ? null : iso)} style={{ cursor: entry ? "pointer" : "default" }} />
           );
         })}
+
+        {/* Erdbeben. NACH den Laenderflaechen gezeichnet, damit sie nicht
+            verdeckt werden. Schwache Beben zuerst, damit die schweren oben
+            liegen - sonst deckt eine Wolke aus M4.5-Punkten ein M7 zu. */}
+        {(beben || []).slice().reverse().map((q) => {
+          const [x, y] = project(q.lon, q.lat);
+          if (!isFinite(x) || !isFinite(y)) return null;
+          const r = window.Quakes.radius(q.mag);
+          const schwer = q.mag >= 6;
+          return (
+            <circle key={q.id} cx={x} cy={y} r={r}
+              fill={schwer ? C.red : C.amber} fillOpacity={schwer ? 0.55 : 0.35}
+              stroke={schwer ? C.red : C.amber} strokeWidth={0.5} strokeOpacity={0.9}>
+              <title>{"M" + q.mag.toFixed(1) + (q.ort ? " · " + q.ort : "") + (q.tsunami ? " · Tsunami-Warnung" : "")}</title>
+            </circle>
+          );
+        })}
       </svg>
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 8 }}>
         {Object.entries(GEO_LEVEL_META).filter(([k]) => k !== "nicht geprüft").map(([k, m]) => (
           <span key={k} className="muted"><span style={{ display: "inline-block", width: 9, height: 9, background: m.color, marginRight: 5 }} />{m.label}</span>
         ))}
+        {beben && beben.length > 0 && (<>
+          <span className="muted"><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 9, background: C.amber, marginRight: 5 }} />Erdbeben M4.5+</span>
+          <span className="muted"><span style={{ display: "inline-block", width: 11, height: 11, borderRadius: 11, background: C.red, marginRight: 5 }} />ab M6</span>
+        </>)}
       </div>
+
+      {beben === null && <div className="muted" style={{ marginTop: 4, fontSize: "var(--fs-2xs)" }}>Erdbeben laden…</div>}
+      {beben && beben.length > 0 && (() => {
+        const z = window.Quakes.zusammenfassung(beben);
+        return (
+          <div className="muted" style={{ marginTop: 4, fontSize: "var(--fs-2xs)", lineHeight: 1.5 }}>
+            {z.anzahl} Erdbeben ab M4.5 in den letzten 7 Tagen · {z.abM6} davon ab M6
+            {z.mitTsunami > 0 ? " · " + z.mitTsunami + " mit Tsunami-Warnung" : ""}
+            {z.staerkstes ? " · stärkstes M" + z.staerkstes.mag.toFixed(1) + (z.staerkstes.ort ? " (" + z.staerkstes.ort + ")" : "") : ""}
+            {" · Quelle: USGS, ohne Zugangsschlüssel"}
+          </div>
+        );
+      })()}
+      {bebenErr && (
+        <div className="muted" style={{ marginTop: 4, fontSize: "var(--fs-2xs)", color: C.amber }}>
+          ⚠ Erdbebendaten nicht ladbar ({bebenErr}). Karte und Länderliste sind davon nicht betroffen.
+        </div>
+      )}
     </div>
   );
 }
@@ -1576,6 +1646,26 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
             Zusatzquelle nicht. UCDP verlangt seit Kurzem einen kostenlosen
             Zugangstoken - ohne ihn wird die Quelle absichtlich ausgelassen und
             die Laenderliste kommt vollstaendig aus der kuratierten Liste. */}
+        {(() => {
+          // GDELT-Ausfaelle zusammenfassen. Ein einzelnes fehlgeschlagenes Land
+          // faellt in der Liste nicht auf - faellt GDELT aber FLAECHENDECKEND
+          // aus, sah man bisher nur ueberall "0 Meldungen" und hielt das fuer
+          // ein leeres Ergebnis statt fuer einen Ausfall. Genau diese
+          // Verwechslung war der Anlass.
+          const laender = geo?.countries ? Object.values(geo.countries) : [];
+          const mitFehler = laender.filter((c) => c.error);
+          if (!mitFehler.length) return null;
+          // Haeufigsten Fehlertext nennen - bei einem systematischen Problem ist
+          // er fuer alle Laender derselbe und benennt die Ursache direkt.
+          const zaehler = {};
+          for (const c of mitFehler) zaehler[c.error] = (zaehler[c.error] || 0) + 1;
+          const haeufigster = Object.entries(zaehler).sort((a, b) => b[1] - a[1])[0][0];
+          return (
+            <div style={{ color: C.amber, marginTop: 3 }}>
+              ⚠ GDELT: {mitFehler.length} von {laender.length} Ländern ohne Ergebnis — {haeufigster}
+            </div>
+          );
+        })()}
         {geo?.ucdpError && (/übersprungen/.test(geo.ucdpError)
           ? <div className="muted" style={{ marginTop: 3 }}>UCDP-Konfliktdaten nicht aktiviert ({geo.ucdpError}) — die Länderauswahl kommt aus der kuratierten Liste, GDELT ist unabhängig davon aktiv.</div>
           : <div style={{ color: C.amber, marginTop: 3 }}>⚠ UCDP nicht erreichbar ({geo.ucdpError}) — nur feste Länderliste + GDELT aktiv.</div>
@@ -1590,7 +1680,10 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
           UCDPs Skip-Meldung ("übersprungen: kein Zugangstoken") ist erwartetes
           Verhalten, kein Ausfall - loest das Panel deshalb nicht aus. */}
       {(geoErr
-        || (geo?.ucdpError && !/übersprungen/.test(geo.ucdpError))) && (
+        || (geo?.ucdpError && !/übersprungen/.test(geo.ucdpError))
+        // Faellt GDELT bei der Mehrheit der Laender aus, ist das ein echtes
+        // Problem und keine Nachrichtenlage - dann gehoert die Diagnose sichtbar.
+        || (geo?.countries && Object.values(geo.countries).filter((c) => c.error).length * 2 > Object.keys(geo.countries).length)) && (
         <DiagPanel diag={diag} diagBusy={diagBusy} diagErr={diagErr} runDiag={runDiag} />
       )}
 
@@ -1618,7 +1711,12 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
 
       {selCountry && (
         <Panel title={`${selCountry.flag} ${selCountry.name} · Details`} right={<span onClick={() => setGeoSel(null)} className="muted" style={{ cursor: "pointer" }}>× schließen</span>}>
-          {selCountry.level === "nicht geprüft" && <div className="muted" style={{ marginBottom: 8 }}>Für dieses Land konnte innerhalb des Zeitbudgets keine GDELT-Abfrage abgeschlossen werden — bitte "AKTUALISIEREN" erneut versuchen.</div>}
+          {selCountry.error && (
+            <div className="note note--warn" style={{ marginBottom: 8 }}>
+              GDELT-Abfrage fehlgeschlagen: {selCountry.error}
+            </div>
+          )}
+          {selCountry.level === "nicht geprüft" && !selCountry.error && <div className="muted" style={{ marginBottom: 8 }}>Für dieses Land konnte innerhalb des Zeitbudgets keine GDELT-Abfrage abgeschlossen werden — bitte "AKTUALISIEREN" erneut versuchen.</div>}
           {selCountry.ucdpActive && (
             <div className="note note--warn" style={{ marginBottom: 10 }}>
               <div style={{ fontSize: "var(--fs-2xs)", letterSpacing: 1.2, marginBottom: 4, fontWeight: 700 }}>UCDP · KONFLIKTEREIGNIS ERFASST</div>

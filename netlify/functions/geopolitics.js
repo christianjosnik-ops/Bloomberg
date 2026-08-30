@@ -287,6 +287,34 @@ const GDELT_MAXRECORDS = 25;            // vorher 10 - genauere Artikelanzahl fu
 const GDELT_HEADLINES_SHOWN = 8;        // vorher 3 - mehr Schlagzeilen im Detailpanel
 const GDELT_TIMELINE_TIMESPAN = "2w";   // eigener, laengerer Zeitraum fuer den Trendverlauf
 
+// Holt eine GDELT-Antwort und gibt sie als geparstes JSON zurueck.
+//
+// WARUM NICHT EINFACH res.json(): GDELT meldet Fehler im KLARTEXT und dabei
+// haeufig mit HTTP 200 - etwa "Your query was too short or too long" oder eine
+// Drosselungsmeldung. res.json() wirft dann nur "Unexpected token E in JSON",
+// und genau diese Meldung landete bisher als Fehlertext beim Land. Damit stand
+// dort eine Aussage ueber die Antwortform, aber keine ueber die Ursache - man
+// konnte nicht unterscheiden zwischen "Abfrage abgelehnt", "gedrosselt" und
+// "GDELT antwortet gerade gar nicht".
+//
+// Deshalb erst als Text lesen, dann selbst parsen und im Fehlerfall den ANFANG
+// DER ANTWORT mitgeben. Dieselbe Lehre, die fuer ReliefWeb schon gezogen wurde
+// (dort wurde der Antwortkoerper bei 4xx mitgenommen) - fuer GDELT war sie nie
+// angewandt worden.
+async function gdeltJson(url, was) {
+  const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } }, PER_REQUEST_TIMEOUT);
+  const text = await res.text();
+  const auszug = String(text || "").slice(0, 200).replace(/\s+/g, " ").trim();
+  if (!res.ok) throw new Error(`${was} HTTP ${res.status}${auszug ? " – " + auszug : ""}`);
+  if (!text) throw new Error(`${was}: leere Antwort (HTTP ${res.status})`);
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    // Kein JSON: fast immer eine Klartextmeldung von GDELT selbst.
+    throw new Error(`${was}: kein JSON, GDELT antwortete "${auszug}"`);
+  }
+}
+
 // Sucht rekursiv nach dem Array der Zeitreihenpunkte (Datum+Wert), unabhaengig
 // vom Antwort-Umschlag - gleiche Taktik wie bei UCDP/DBnomics, da die genaue
 // Form der GDELT-Timeline-Antwort hier nicht live geprueft werden konnte.
@@ -311,9 +339,7 @@ function findGdeltTimelineData(node, depth) {
 async function fetchGdeltTimelineFor(country) {
   const q = `"${country.name}" ${CONFLICT_KEYWORDS}`;
   const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q)}&mode=timelinevol&format=json&timespan=${GDELT_TIMELINE_TIMESPAN}`;
-  const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } }, PER_REQUEST_TIMEOUT);
-  if (!res.ok) throw new Error(`GDELT-Timeline HTTP ${res.status}`);
-  const json = await res.json();
+  const json = await gdeltJson(url, "GDELT-Timeline");
   const points = findGdeltTimelineData(json, 0);
   if (!points) return [];
   return points
@@ -344,10 +370,15 @@ async function fetchGdeltFor(country, mitTrend) {
   // hart (wirft bei Fehler).
   const [articlesResult, timelineResult] = await Promise.allSettled([
     (async () => {
-      const res = await fetchWithTimeout(url, { headers: { "Accept": "application/json", "User-Agent": UA } }, PER_REQUEST_TIMEOUT);
-      if (!res.ok) throw new Error(`GDELT HTTP ${res.status}`);
-      const json = await res.json();
-      const articles = (Array.isArray(json && json.articles) ? json.articles : []).filter((a) => a && a.title && a.url);
+      const json = await gdeltJson(url, "GDELT");
+      // Kein articles-Feld ist etwas anderes als ein leeres articles-Feld:
+      // Ersteres heisst "Antwortform unerwartet", Letzteres "nichts gefunden".
+      // Beides als 0 Meldungen zu zeigen, verwischt genau den Unterschied, der
+      // bei der Fehlersuche zaehlt.
+      if (!json || !Array.isArray(json.articles)) {
+        throw new Error(`GDELT: unerwartete Antwortform, Schlüssel: ${json && typeof json === "object" ? Object.keys(json).slice(0, 8).join(",") : typeof json}`);
+      }
+      const articles = json.articles.filter((a) => a && a.title && a.url);
       // count = tatsaechliches Artikelvolumen (fuer die Risikostufe), headlines =
       // nur die ersten GDELT_HEADLINES_SHOWN zur Anzeige - beide bewusst getrennt,
       // damit das Kappen der Anzeige nicht versehentlich auch die Score-Berechnung deckelt.
