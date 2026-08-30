@@ -13,7 +13,7 @@
 // statt nur "hat nicht geklappt".
 //
 // Aufruf:  /.netlify/functions/diag           (alle Quellen)
-//          /.netlify/functions/diag?only=gdelt
+//          /.netlify/functions/diag?only=usgs
 //
 // Sicherheit: Es werden KEINE Schluesselwerte, Cookies oder Anfrage-Header
 // ausgegeben - nur Statuszeilen und ein gekuerzter Auszug des Antwortkoerpers.
@@ -21,7 +21,7 @@
 // sind und wie lang sie sind; zusaetzlich filtert redigiere() jeden Wert aus
 // allen ausgehenden Texten heraus, falls ein Anbieter ihn je zurueckspiegelt.
 
-// Siehe ausfuehrlicher Kommentar in lib/providers.js: fred-csv UND gdelt
+// Siehe ausfuehrlicher Kommentar in lib/providers.js: fred-csv und weitere
 // verstummten im Livebetrieb beide komplett (kein Status, keine Bytes) - das
 // Symptom eines haengenden IPv6-Verbindungsversuchs ohne funktionierendes
 // IPv6-Egress. Diese Function nutzt providers.js NICHT (rohes fetch), deshalb
@@ -242,32 +242,6 @@ const PROBES = [
     },
   },
   {
-    key: "gdelt",
-    label: "GDELT (Weltlage, Nachrichtenvolumen – Hauptpfad mit 7-Tage-Fenster)",
-    url: "https://api.gdeltproject.org/api/v2/doc/doc?query=" + encodeURIComponent('"Sudan" (war OR conflict)') + "&mode=artlist&maxrecords=25&timespan=7d&format=json&sort=datedesc",
-    headers: { "Accept": "application/json", "User-Agent": UA },
-  },
-  {
-    // Beleg-Probe fuer den neuen Trendverlauf (mode=timelinevol). Antwortform
-    // ungetestet - expect() prueft, ob eine date/value-Zeitreihe erkennbar ist.
-    key: "gdelt-timeline",
-    label: "GDELT Timeline (Trendverlauf, mode=timelinevol)",
-    url: "https://api.gdeltproject.org/api/v2/doc/doc?query=" + encodeURIComponent('"Sudan" (war OR conflict)') + "&mode=timelinevol&format=json&timespan=2w",
-    headers: { "Accept": "application/json", "User-Agent": UA },
-    expect: (body) => {
-      try {
-        const j = JSON.parse(body);
-        const found = (function find(node, depth) {
-          if (Array.isArray(node)) return node.length && node.every((x) => x && typeof x === "object" && "date" in x && "value" in x) ? node : node.map((n) => find(n, (depth || 0) + 1)).find(Boolean) || null;
-          if (!node || typeof node !== "object" || (depth || 0) > 4) return null;
-          for (const k of Object.keys(node)) { const hit = find(node[k], (depth || 0) + 1); if (hit) return hit; }
-          return null;
-        })(j, 0);
-        return found ? null : "keine date/value-Zeitreihe in der Antwort gefunden";
-      } catch (e) { return "Antwort konnte nicht als JSON gelesen werden: " + String(e && e.message || e); }
-    },
-  },
-  {
     key: "yahoo",
     label: "Yahoo Finance (Kurse - Kontrollprobe, funktioniert erfahrungsgemäß)",
     url: "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=5d&interval=1d",
@@ -388,7 +362,7 @@ exports.handler = async (event) => {
   // Vorher liefen die Proben sequenziell, mit der Begruendung, sie wuerden sich
   // sonst gegenseitig das Zeitbudget nehmen. Der Livebetrieb hat gezeigt, dass
   // genau das Gegenteil eintritt: vier tote FRED-Proben a 6s ergaben 24s und
-  // sprengten das 20s-Budget - alles danach (UCDP, GDELT, Yahoo,
+  // sprengten das 20s-Budget - alles danach (UCDP, USGS, Yahoo,
   // Stooq, Frankfurter) wurde uebersprungen. Der Bericht meldete "0 OK" und
   // verschwieg ausgerechnet die Quellen, die funktionieren.
   //

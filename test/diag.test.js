@@ -24,7 +24,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.strictEqual(r.dataArrayLength, 1, "Laenge des data-Arrays muss gemeldet werden");
     assert.ok(typeof r.ms === "number", "Dauer muss gemessen werden");
     assert.ok(r.bodySnippet.includes("Test"));
-    console.log("Block 1/15 (Erfolgsfall: Status/JSON-Struktur/Dauer): OK");
+    console.log("Block 1/14 (Erfolgsfall: Status/JSON-Struktur/Dauer): OK");
   }
 
   // --- 400 mit Fehlertext: der Koerper ist die eigentliche Information ---
@@ -35,11 +35,11 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
       text: async () => JSON.stringify({ error: { message: "Invalid value 'current' for filter[value]" } }),
     });
     const { probe } = fresh()._internal;
-    const r = await probe({ key: "gd", label: "GDELT", url: "https://example.invalid/b" });
+    const r = await probe({ key: "us", label: "USGS", url: "https://example.invalid/b" });
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.status, 400);
     assert.ok(r.bodySnippet.includes("Invalid value"), "der erklaerende Fehlertext MUSS im Auszug landen - er ist der ganze Zweck der Diagnose");
-    console.log("Block 2/15 (4xx: Fehlertext des Servers bleibt erhalten): OK");
+    console.log("Block 2/14 (4xx: Fehlertext des Servers bleibt erhalten): OK");
   }
 
   // --- Zeitueberschreitung: klare Meldung statt Haenger ---
@@ -54,7 +54,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.strictEqual(r.ok, false);
     assert.ok(/Zeitueberschreitung/.test(r.error), "muss die Zeitueberschreitung benennen, statt einen rohen Abbruch zu melden");
     assert.ok(dt < 8000, "die Probe muss selbst abbrechen (gemessen: " + dt + "ms)");
-    console.log("Block 3/15 (Zeitueberschreitung sauber gemeldet, " + (dt / 1000).toFixed(1) + "s): OK");
+    console.log("Block 3/14 (Zeitueberschreitung sauber gemeldet, " + (dt / 1000).toFixed(1) + "s): OK");
   }
 
   // --- Netzwerkfehler: .cause enthaelt bei fetch oft erst den echten Grund ---
@@ -65,7 +65,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.error, "fetch failed");
     assert.ok(/ENOTFOUND/.test(r.errorCause), "der eigentliche Grund steckt in .cause und darf nicht verlorengehen");
-    console.log("Block 4/15 (Netzwerkfehler: .cause wird mitgemeldet): OK");
+    console.log("Block 4/14 (Netzwerkfehler: .cause wird mitgemeldet): OK");
   }
 
   // --- Kaputtes JSON trotz JSON-Content-Type darf die Diagnose nicht abschiessen ---
@@ -79,24 +79,24 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const r = await probe({ key: "html", label: "HTML statt JSON", url: "https://example.invalid/e" });
     assert.ok(r.jsonParseError, "muss den Parse-Fehler melden statt zu werfen");
     assert.ok(r.bodySnippet.includes("Cloudflare"), "der HTML-Auszug entlarvt die Bot-Sperre");
-    console.log("Block 5/15 (HTML statt JSON: Bot-Sperre wird sichtbar): OK");
+    console.log("Block 5/14 (HTML statt JSON: Bot-Sperre wird sichtbar): OK");
   }
 
   // --- Handler: Gesamtantwort ist gueltiges JSON mit Zusammenfassung, auch wenn alles scheitert ---
   {
     global.fetch = async () => { throw new Error("alles kaputt"); };
     const diag = fresh();
-    const res = await diag.handler({ httpMethod: "GET", queryStringParameters: { only: "gdelt" } });
+    const res = await diag.handler({ httpMethod: "GET", queryStringParameters: { only: "ucdp" } });
     assert.strictEqual(res.statusCode, 200, "die Diagnose selbst darf nie fehlschlagen - sonst diagnostiziert sie nichts mehr");
     const body = JSON.parse(res.body);
-    // 2 Proben: die Artikelliste und der Trendverlauf.
-    assert.strictEqual(body.proben.length, 2, "only=gdelt muss beide GDELT-Proben auswaehlen (Artikelliste + Trendverlauf)");
+    // 2 Proben: laufender Monat und Vormonat.
+    assert.strictEqual(body.proben.length, 2, "only=ucdp muss beide UCDP-Proben auswaehlen (laufender Monat + Vormonat)");
     assert.strictEqual(body.zusammenfassung.fehlgeschlagen.length, 2);
     assert.ok(body.laufzeitumgebung.node, "Node-Version gehoert in den Bericht");
     // Sicherheitsnetz: es darf nichts Geheimes im Bericht landen
     const asText = JSON.stringify(body);
     assert.ok(!/token=|apikey=|api_key=|Cookie/i.test(asText), "der Bericht darf keine Schluessel oder Cookies enthalten");
-    console.log("Block 6/15 (Handler: robust + keine Geheimnisse im Bericht): OK");
+    console.log("Block 6/14 (Handler: robust + keine Geheimnisse im Bericht): OK");
   }
 
   // --- expectStatus: eine Probe, die fehlschlagen SOLL, gilt als bestanden ---
@@ -114,7 +114,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.strictEqual(r.wieErwartet, true, "410 war genau der erwartete Status");
     assert.strictEqual(r.ok, true, "eine Probe mit erwartetem Fehlstatus darf nicht als Ausfall gezaehlt werden");
     assert.ok(/decommissioned/.test(r.bodySnippet), "die Begruendung bleibt trotzdem sichtbar");
-    console.log("Block 7/15 (erwarteter Fehlstatus zaehlt als bestanden): OK");
+    console.log("Block 7/14 (erwarteter Fehlstatus zaehlt als bestanden): OK");
   }
 
   // --- expectStatus: abweichender Status faellt auf ---
@@ -128,7 +128,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const r = await probe({ key: "v1", label: "v1 abgeschaltet", url: "https://example.invalid/v1", expectStatus: 410 });
     assert.strictEqual(r.wieErwartet, false, "wenn v1 ploetzlich wieder antwortet, muss das auffallen");
     assert.strictEqual(r.ok, false);
-    console.log("Block 8/15 (abweichender Status wird als Abweichung gemeldet): OK");
+    console.log("Block 8/14 (abweichender Status wird als Abweichung gemeldet): OK");
   }
 
   // --- FRED-Sammelproben: eine je Frequenzgruppe, erzeugt aus derselben
@@ -174,7 +174,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const warnAlt = p.expect(`${kopf}\n${zeile("2022-12-01")}\n${zeile("2023-01-01")}`);
     assert.ok(warnAlt && /eingestellt/.test(warnAlt),
       "vorhandene IDs mit jahrealten Daten muessen als vermutlich eingestellt gemeldet werden - sonst wiederholt sich der LRHUTTTTEZM156S-Fall");
-    console.log("Block 9/15 (FRED-Sammelproben: je Frequenzgruppe eine, erkennen Luecken und Veraltetes): OK");
+    console.log("Block 9/14 (FRED-Sammelproben: je Frequenzgruppe eine, erkennen Luecken und Veraltetes): OK");
   }
 
   // --- UCDP: die neue Hauptquelle fuer F6 hat eigene Beleg-Proben ---
@@ -198,25 +198,13 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const body = JSON.parse(res.body);
     assert.strictEqual(body.proben.length, 2, "only=ucdp muss beide Monatsproben auswaehlen (laufender Monat + Vormonat)");
     assert.ok(body.proben.some((p) => p.key === "ucdp-monat-aktuell") && body.proben.some((p) => p.key === "ucdp-monat-vormonat"));
-    console.log("Block 10/15 (UCDP-Proben folgen dem aktuellen Datum und pruefen die Antwortform): OK");
+    console.log("Block 10/14 (UCDP-Proben folgen dem aktuellen Datum und pruefen die Antwortform): OK");
   }
 
-  // --- GDELT-Timeline-Probe: erkennt eine date/value-Zeitreihe im Antwortkoerper ---
-  {
-    const { PROBES } = fresh()._internal;
-    const p = PROBES.find((x) => x.key === "gdelt-timeline");
-    assert.ok(p, "die GDELT-Timeline-Beleg-Probe muss existieren");
-    assert.strictEqual(p.expect(JSON.stringify({ timeline: [{ series: "x", data: [{ date: "20260801000000", value: 1.2 }] }] })), null,
-      "eine erkennbare Zeitreihe darf keine Warnung ergeben");
-    assert.ok(p.expect(JSON.stringify({ articles: [{ title: "x", url: "https://x" }] })),
-      "eine Artikel-Antwort ohne date/value muss als fehlende Zeitreihe auffallen");
-    assert.ok(p.expect("kein-json"), "kaputte Antwort muss ebenfalls eine Warnung ergeben");
-    console.log("Block 11/15 (GDELT-Timeline-Probe erkennt die Zeitreihe, faellt sonst auf): OK");
-  }
 
   // --- Der Fehler, den der Livebetrieb aufgedeckt hat: vier tote FRED-Proben
   //     a 6s ergaben sequenziell 24s und sprengten das interne 20s-Budget.
-  //     Alles danach - UCDP, GDELT, Yahoo, Stooq, Frankfurter -
+  //     Alles danach - UCDP, USGS, Yahoo, Stooq, Frankfurter -
   //     wurde uebersprungen, der Bericht meldete "0 OK". Die Diagnose verschwieg
   //     also ausgerechnet die Quellen, die funktionieren. Sie MUSS parallel
   //     laufen: dann kostet der Durchlauf so viel wie die langsamste Probe. ---
@@ -251,9 +239,9 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     // obwohl FRED tot ist.
     assert.ok(body.zusammenfassung.ok.length > 0,
       "die erreichbaren Quellen muessen als OK gemeldet werden, auch wenn andere haengen - im Livebetrieb stand hier faelschlich '0 OK'");
-    assert.ok(body.zusammenfassung.ok.some((k) => k.startsWith("gdelt") || k === "yahoo" || k === "frankfurter"),
-      "konkret: GDELT/Yahoo/Frankfurter duerfen nicht hinter toten FRED-Proben verschwinden");
-    console.log("Block 12/15 (tote Quellen verdecken die funktionierenden nicht mehr): OK");
+    assert.ok(body.zusammenfassung.ok.some((k) => k.startsWith("usgs") || k === "yahoo" || k === "frankfurter"),
+      "konkret: USGS/Yahoo/Frankfurter duerfen nicht hinter toten FRED-Proben verschwinden");
+    console.log("Block 11/14 (tote Quellen verdecken die funktionierenden nicht mehr): OK");
   }
 
   // --- Trennschaerfe-Proben fuer die FRED-Ursache: erreichbar oder nicht? ---
@@ -277,7 +265,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
       "eine Antwort, die den fehlenden Schluessel benennt, ist das erwartete Ergebnis");
     assert.ok(api.expect("<html>irgendwas anderes</html>"),
       "eine voellig andere Antwortform muss auffallen");
-    console.log("Block 13/15 (Proben trennen 'FRED langsam' von 'FRED nicht erreichbar'): OK");
+    console.log("Block 12/14 (Proben trennen 'FRED langsam' von 'FRED nicht erreichbar'): OK");
   }
 
   // --- Die Frage, die keine einzelne Probe beantworten kann: KOMMT der
@@ -321,7 +309,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     const alles = JSON.stringify(mit);
     assert.ok(!alles.includes("einsehrgeheimerschluessel"),
       "der Schluessel darf in keinem Feld der Diagnose auftauchen - dieser Bericht wird im UI angezeigt");
-    console.log("Block 14/15 (Diagnose meldet, OB ein Schluessel wirkt, ohne ihn preiszugeben): OK");
+    console.log("Block 13/14 (Diagnose meldet, OB ein Schluessel wirkt, ohne ihn preiszugeben): OK");
   }
 
   // --- Zweite Verteidigungslinie: manche Anbieter spiegeln den gesendeten
@@ -344,7 +332,7 @@ function fresh() { delete require.cache[require.resolve(path)]; return require(p
     assert.ok(!alles.includes(geheim),
       "ein vom Anbieter zurueckgespiegelter Schluessel muss herausgefiltert werden, bevor der Auszug im UI landet");
     assert.ok(alles.includes("***"), "und die Stelle muss als redigiert erkennbar bleiben, statt spurlos zu verschwinden");
-    console.log("Block 15/15 (zurueckgespiegelte Schluessel werden aus dem Bericht entfernt): OK");
+    console.log("Block 14/14 (zurueckgespiegelte Schluessel werden aus dem Bericht entfernt): OK");
   }
 
   console.log("\nAlle diag.js-Tests erfolgreich.");

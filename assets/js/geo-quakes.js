@@ -1,9 +1,9 @@
 // geo-quakes.js — Erdbeben des USGS als Live-Geodaten fuer die Weltkarte (F6).
 //
 // WARUM DIESE QUELLE
-// Die bisherigen Geo-Quellen des Weltlage-Moduls liefern beide KEINE
-// Koordinaten: UCDP nennt Laendernamen, GDELT zaehlt Nachrichtenartikel je
-// Land. Auf der Karte laesst sich damit nur flaechig einfaerben. Der USGS
+// Die uebrige Geo-Quelle des Weltlage-Moduls liefert KEINE Koordinaten: UCDP
+// nennt nur Laendernamen. Auf der Karte laesst sich damit nur flaechig
+// einfaerben. Der USGS
 // liefert dagegen echte Punktdaten mit Laenge/Breite - und zwar ohne
 // Zugangstoken, ohne registrierten Appnamen, ohne Antrag per Mail. Nach den
 // Erfahrungen mit UCDP (Token, 3-5 Werktage) und ReliefWeb (genehmigter
@@ -11,13 +11,12 @@
 // Quelle, die nicht eines Tages eine Registrierung nachschiebt.
 //
 // WARUM IM BROWSER UND NICHT IN DER NETLIFY-FUNCTION
-// geopolitics.js laeuft bereits am Anschlag seines Zeitbudgets (UCDP 2500ms +
-// drei GDELT-Wellen a 2500ms = 8500ms unter Netlifys 10s-Grenze). Ein weiterer
-// Abruf dort muesste den anderen Zeit wegnehmen. Der USGS setzt
-// CORS-Kopfzeilen, ist also direkt aus dem Browser abrufbar - genauso wie die
-// Laendergrenzen der Karte schon heute direkt von einem CDN geladen werden.
-// Nebeneffekt: Die Erdbeben erscheinen auch dann, wenn die geopolitics-Function
-// komplett ins Zeitbudget laeuft.
+// Der USGS setzt CORS-Kopfzeilen, ist also direkt aus dem Browser abrufbar -
+// genauso wie die Laendergrenzen der Karte schon heute direkt von einem CDN
+// geladen werden. Das haelt die Netlify-Function frei von einem weiteren Abruf
+// und hat einen wichtigen Nebeneffekt: Die Erdbeben erscheinen auch dann, wenn
+// die geopolitics-Function ganz ausfaellt. In der Live-Diagnose antwortete der
+// USGS in 246ms - er ist die zuverlaessigste Quelle dieses Reiters.
 //
 // Dual-Export wie die uebrigen Logikdateien: laeuft unveraendert in Node
 // (test/geo-quakes.test.js) und im Browser. Kein Fetch, kein DOM - nur URL-Bau

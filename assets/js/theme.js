@@ -72,15 +72,29 @@
   const RATIO_SUPPRESS_FOR_FINANCIALS = ["currentRatio", "quickRatio", "cashRatio", "netDebt", "netDebtToEbitda", "interestCoverage", "debtToEquity", "equityRatio", "dso", "dio", "dpo", "ccc"];
 
   /* F6 WELTLAGE: Metadaten */
+  // Stufen der Weltlage (F6). Seit UCDP die einzige Quelle ist, sind nur noch
+  // "hoch" (UCDP fuehrt einen Konflikt), "keine" (geprueft, kein Konflikt) und
+  // "unbekannt" (kein Zugangstoken oder Ausfall - nichts geprueft) erreichbar.
+  //
+  // kritisch/mittel/niedrig bleiben nur als Definition stehen, damit alte
+  // zwischengespeicherte Antworten nicht ungefaerbt darstellen. Sie kamen
+  // ausschliesslich aus dem GDELT-Nachrichtenvolumen; diese Quelle ist aus zwei
+  // unabhaengigen Netzen nicht erreichbar und wurde entfernt.
+  //
+  // "unbekannt" ist ausdruecklich NICHT dasselbe wie "keine": Letzteres heisst
+  // geprueft und ruhig, Ersteres gar nicht geprueft. Die beiden zu vermischen
+  // waere genau die stille Falschaussage, die F6 vermeiden soll - deshalb auch
+  // eine eigene Farbe statt des Grautons von "keine".
   const GEO_LEVEL_META = {
     "kritisch": { color: "#ff5252", order: 4, label: "KRITISCH" },
     "hoch": { color: "#ff7a45", order: 3, label: "HOCH" },
     "mittel": { color: "#ffb000", order: 2, label: "MITTEL" },
     "niedrig": { color: "#d9c05a", order: 1, label: "NIEDRIG" },
     "keine": { color: "#8f959f", order: 0, label: "KEINE" },
-    "nicht geprüft": { color: "#8f959f", order: -1, label: "N/GEPRÜFT" },
+    "unbekannt": { color: "#5a6270", order: -1, label: "UNBEKANNT" },
+    "nicht geprüft": { color: "#5a6270", order: -1, label: "N/GEPRÜFT" },
   };
-  const geoLevelMeta = (level) => GEO_LEVEL_META[level] || GEO_LEVEL_META["keine"];
+  const geoLevelMeta = (level) => GEO_LEVEL_META[level] || GEO_LEVEL_META["unbekannt"];
 
   return { C, mono, inp, CUR, fmtCap, fmtVol, fmtMoney, fmtRatio, pctColor, ago, METRIC_META, RATIO_SUPPRESS_FOR_FINANCIALS, GEO_LEVEL_META, geoLevelMeta };
 });
