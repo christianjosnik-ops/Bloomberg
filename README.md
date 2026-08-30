@@ -20,7 +20,9 @@ assets/js/                   Reine Rechenlogik, ohne JSX und ohne Babel.
                              Node-Tests.
   ratios.js                  Kennzahlen aus normalisierten Jahresabschluessen
   peers.js                   Peer-Vergleich: Median + Perzentil-Rang
-  indicators.js              Chart-Indikatoren (SMA, RSI)
+  indicators.js              Chart-Indikatoren (SMA, RSI) + Zusammenfassen
+                             von Balken zu groesseren Kerzen
+  mc.js                      Monte-Carlo-Simulation der Bewertungs-Bandbreite
   theme.js                   Farben, Formatierung, Anzeige-Metadaten
   market-data.js             Presets/Konstanten + Datenbeschaffungs-Helfer
 
@@ -107,3 +109,63 @@ Danach in Netlify unter *Site configuration → Environment variables* als
 haengt allein am GDELT-Nachrichtenvolumen - die Stufe "kritisch" ist dann
 rechnerisch nicht mehr erreichbar, weil sie eine offizielle Konfliktquelle
 voraussetzt.
+
+## Monte Carlo (Bewertungs-Bandbreite)
+
+Ein DCF liefert immer genau eine Zahl und taeuscht damit eine Genauigkeit vor,
+die es nicht gibt: das Ergebnis haengt an Wachstum, Kapitalkosten und ewigem
+Wachstum, und kleine Verschiebungen dort bewegen den fairen Wert zweistellig.
+
+Im Marktreiter oeffnet der Knopf **◈ MONTE CARLO** (Kopfzeile des
+Kennzahlen-Panels) ein eigenes Fenster, das die Rechnung 4000 Mal mit zufaellig
+gezogenen Annahmen durchspielt. Jeder Durchlauf erscheint waehrend des Rechnens
+als einzelner Punkt; die gestrichelte Linie ist der heutige Boersenwert.
+
+Die eigentliche Aussage steht unter dem Bild: **in wie viel Prozent der
+Durchlaeufe** lag der errechnete Wert ueber dem Boersenwert. "Bei fast jeder
+Annahme guenstig" ist etwas voellig anderes als "guenstig nur, wenn man
+optimistisch rechnet" - und genau diese Unterscheidung ist der Grund, ueberhaupt
+zu simulieren. Keine Prognose, keine Anlageberatung.
+
+Technisches:
+
+- `assets/js/mc.js` enthaelt nur Simulation und Statistik, keine eigene
+  Finanzlogik: Free Cashflow kommt aus den Bilanzzeilen, `netDebt` aus
+  `ratios.js`, der Boersenwert aus den Kursdaten (gleiche Arbeitsteilung wie
+  `peers.js`).
+- Eigener Zufallsgenerator mit **Startwert** statt `Math.random()`. Nur so sind
+  die Tests reproduzierbar - und derselbe Startwert liefert denselben Lauf.
+- Gerechnet wird **stapelweise** ueber `requestAnimationFrame`, damit der
+  Browser waehrenddessen nicht einfriert. Ein Test sichert, dass viele kleine
+  Stapel Wert fuer Wert dasselbe ergeben wie ein Lauf am Stueck.
+- Annahmen, bei denen die Formel nicht definiert ist (Kapitalkosten unter dem
+  ewigen Wachstum), werden **verworfen und gezaehlt**, nie stillschweigend
+  ersetzt. Die Zahl steht im Fenster.
+
+## Kerzencharts
+
+Der Chart im Marktreiter laesst sich zwischen **LINIE** und **KERZEN**
+umschalten. Yahoo und Stooq liefern Open/Hoch/Tief je Balken bereits mit; sie
+werden in `quote.js` je Balken uebernommen (`o`/`h`/`l` neben `p`/`v`).
+
+- Liefert eine Quelle keine Open/Hoch/Tief-Werte, bleibt die Linie stehen und
+  sagt warum - statt einer leeren Flaeche.
+- Bei langen Zeitraeumen wird zusammengefasst (5 Jahre = ~1250 Tagesbalken ->
+  etwa Wochenkerzen), sonst waere jede Kerze unter einem Pixel breit. Die Regel
+  steckt in `indicators.js` (`groupSizeFor`/`aggregateOHLC`) und ist getestet:
+  Open vom ersten Balken, Close vom letzten, Hoch/Tief aus der ganzen Gruppe.
+- Einzelne Balken ohne Open/Hoch/Tief (Yahoo-Luecken an Feiertagen) entfallen
+  als Kerze, bleiben aber als Linienpunkt erhalten - sie erfinden kein
+  Hoch/Tief und heben auch das Gruppen-Hoch nicht an.
+
+## Suchvorschlaege
+
+Vorschlaege erscheinen ab **drei** eingetippten Zeichen (`SUGGEST_MIN` in
+`index.html` - eine Konstante fuer beide Stellen, die die Schwelle brauchen).
+
+Die Liste kommt zweistufig: Treffer aus den lokalen Presets stehen sofort da,
+die Yahoo-Suche wird nachtraeglich dazugemischt. Das ist wichtig, weil die
+Netzsuche im schlechten Fall bis zum Suchbudget von 5 Sekunden braucht -
+solange darf ein bereits bekannter Vorschlag nicht zurueckgehalten werden.
+Waehrend das Netz noch antwortet, steht "sucht…"; "Keine Treffer" erscheint
+erst, wenn auch die Netzsuche durch ist.

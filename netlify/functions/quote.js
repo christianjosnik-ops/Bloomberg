@@ -121,8 +121,25 @@ function shape(data, symbol) {
   const ts = result.timestamp || [];
   const q = (result.indicators && result.indicators.quote && result.indicators.quote[0]) || {};
   const closes = q.close || []; const volumes = q.volume || [];
+  // Yahoo liefert Open/Hoch/Tief JE BALKEN im selben quote-Objekt wie close.
+  // Sie werden fuer die Kerzendarstellung mitgenommen. Bewusst einzeln
+  // abgesichert: Yahoo hat in der Praxis Luecken (Feiertage, Handelspausen),
+  // in denen close gesetzt ist, aber open/high/low null sind. Ein solcher
+  // Balken darf keine Kerze mit Nullwerten erzeugen - dann fehlt die Kerze
+  // eben und die Linie zeichnet trotzdem weiter.
+  const opens = q.open || []; const highs = q.high || []; const lows = q.low || [];
+  const bar = (arr, i) => (arr[i] != null && !isNaN(arr[i]) ? +(+arr[i]).toFixed(2) : null);
   const series = [];
-  for (let i = 0; i < ts.length; i++) { const c = closes[i]; if (c != null && !isNaN(c)) series.push({ t: new Date(ts[i] * 1000).toISOString().slice(0, 10), p: +(+c).toFixed(2), v: volumes[i] != null ? +volumes[i] : null }); }
+  for (let i = 0; i < ts.length; i++) {
+    const c = closes[i];
+    if (c == null || isNaN(c)) continue;
+    series.push({
+      t: new Date(ts[i] * 1000).toISOString().slice(0, 10),
+      p: +(+c).toFixed(2),
+      v: volumes[i] != null ? +volumes[i] : null,
+      o: bar(opens, i), h: bar(highs, i), l: bar(lows, i),
+    });
+  }
   const price = meta.regularMarketPrice != null ? +(+meta.regularMarketPrice).toFixed(2) : (series.length ? series[series.length - 1].p : null);
   // WICHTIG: previousClose zuerst, chartPreviousClose NUR als Rueckfallebene.
   //
@@ -283,11 +300,24 @@ async function fromStooq(symbol, range) {
   const iDate = head.indexOf("date"), iClose = head.indexOf("close"), iVol = head.indexOf("volume");
   const iOpen = head.indexOf("open"), iHigh = head.indexOf("high"), iLow = head.indexOf("low");
   if (iDate === -1 || iClose === -1) return null;
+  // Open/Hoch/Tief JE ZEILE fuer die Kerzendarstellung. Die Spaltenindizes
+  // wurden oben ohnehin schon gesucht - vorher wurden sie nur fuer die letzte
+  // Zeile (Tageswerte) ausgewertet, die Historie blieb reine Schlusskurse.
+  const zelle = (p, idx) => {
+    if (idx === -1) return null;
+    const v = parseFloat(p[idx]);
+    return isNaN(v) ? null : +v.toFixed(2);
+  };
   const series = [];
   for (let i = 1; i < lines.length; i++) {
     const p = lines[i].split(",");
     const t = p[iDate]; const c = parseFloat(p[iClose]);
-    if (t && !isNaN(c)) series.push({ t, p: +c.toFixed(2), v: iVol > -1 ? (parseFloat(p[iVol]) || null) : null });
+    if (t && !isNaN(c)) {
+      series.push({
+        t, p: +c.toFixed(2), v: iVol > -1 ? (parseFloat(p[iVol]) || null) : null,
+        o: zelle(p, iOpen), h: zelle(p, iHigh), l: zelle(p, iLow),
+      });
+    }
   }
   if (series.length < 2) return null;
   const lastLine = lines[lines.length - 1].split(",");
