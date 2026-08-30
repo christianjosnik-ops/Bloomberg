@@ -34,6 +34,9 @@ netlify/functions/           Serverseitige Proxys (CommonJS, nur Node)
   lib/
     providers.js             Fallback-Ketten + Circuit Breaker
     normalizer.js            Yahoo-Rohfelder -> einheitliches Bilanz-Schema
+                             (quoteSummary, aeltere Schnittstelle)
+    fundamentals.js          Jahresabschluesse ueber fundamentals-timeseries
+                             (aktuelle Schnittstelle) + Zusammenfuehren beider
     geo-countries.js         Laenderreferenz fuer das Weltlage-Modul
 
 test/                        Tests, eine Datei je Modul
@@ -179,3 +182,31 @@ Netzsuche im schlechten Fall bis zum Suchbudget von 5 Sekunden braucht -
 solange darf ein bereits bekannter Vorschlag nicht zurueckgehalten werden.
 Waehrend das Netz noch antwortet, steht "sucht…"; "Keine Treffer" erscheint
 erst, wenn auch die Netzsuche durch ist.
+
+## Fundamentaldaten: zwei Quellen
+
+Die Jahresabschluesse kamen urspruenglich nur ueber
+`quoteSummary?modules=balanceSheetHistory,incomeStatementHistory,cashflowStatementHistory`.
+Das ist Yahoos **aeltere** Schnittstelle; sie antwortet fuer viele Titel
+inzwischen ohne Kapitalflussrechnung. Sichtbar wurde das daran, dass operativer
+Cashflow und Investitionen fehlten - und ohne die stehen sowohl die FCF-Marge
+(F5 RATIO) als auch die Bewertung (F7 MONTE CARLO) ohne Zahlen da.
+
+`quote.js` fragt deshalb **beide** Schnittstellen im selben Parallelblock ab
+(kostet keine zusaetzliche Wartezeit) und fuehrt sie **feldweise** zusammen:
+
+- Vorrang hat `fundamentals-timeseries` - der Weg, den Yahoos eigene Oberflaeche
+  heute geht. Sie liefert auch Felder, die die alte Schnittstelle nicht kennt,
+  darunter den fertigen freien Cashflow (`annualFreeCashFlow`).
+- `quoteSummary` fuellt nur noch Luecken. Feldweise statt "ganzer Satz oder gar
+  nicht", weil in der Praxis oft Bilanz und GuV aus der einen und die
+  Kapitalflussrechnung aus der anderen Quelle kommt.
+- TTM-Punkte werden **nicht** unter die Geschaeftsjahre gemischt - dieselbe
+  Regel wie in `normalizer.js`.
+- `out.fundamentalsQuellen` meldet, wie viele Jahreszeilen jede Quelle
+  beigesteuert hat. Faellt eine aus, sieht man das, statt zu raten.
+
+Ob die Quellen live liefern, zeigt die **F9-Diagnose**: die Proben
+`yahoo-fundamentals-timeseries` (mit inhaltlicher Pruefung, ob der operative
+oder freie Cashflow tatsaechlich dabei ist) und `yahoo-fundamentals-quotesummary`
+als Vergleich.

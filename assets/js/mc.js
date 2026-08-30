@@ -227,7 +227,22 @@
   // nur einen Zufluss - dann liefert die Funktion null statt einer Zahl, die
   // etwas anderes misst als ihr Name sagt.
   function freeCashflow(row) {
-    if (!row || !isNum(row.capex)) return null;
+    if (!row) return null;
+
+    // Stufe 0: Yahoo liefert den freien Cashflow ueber den Zeitreihen-Endpunkt
+    // fertig mit (annualFreeCashFlow). Wenn er da ist, ist er dem Selbstrechnen
+    // vorzuziehen - Yahoo beruecksichtigt dabei Posten, die "operativer
+    // Cashflow minus Investitionen" nicht sieht. Braucht kein capex.
+    if (isNum(row.freeCashflowReported)) {
+      return {
+        wert: row.freeCashflowReported,
+        basis: "reported",
+        label: "freier Cashflow laut Jahresabschluss",
+        genau: true,
+      };
+    }
+
+    if (!isNum(row.capex)) return null;
     var invest = Math.abs(row.capex);
 
     if (isNum(row.operatingCashflow)) {

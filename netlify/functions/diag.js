@@ -66,6 +66,7 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 // Aus fred.js/geopolitics.js gespiegelt, damit die Diagnose GENAU die URLs
 // prueft, die im Betrieb verwendet werden. Weichen die Dateien auseinander,
 // diagnostiziert man sonst etwas anderes als das, was tatsaechlich laeuft.
+const { timeseriesUrl, parseTimeseries } = require("./lib/fundamentals");
 const UCDP_TOKEN = process.env.UCDP_ACCESS_TOKEN || "";
 const FRED_ENV_KEY = process.env.FRED_API_KEY || "";
 const PROBES = [
@@ -187,6 +188,34 @@ const PROBES = [
     }
     return proben;
   })(),
+  // --- Fundamentaldaten: kommt der operative Cashflow ueberhaupt an? -------
+  //
+  // Anlass: Im Betrieb fehlten operativer Cashflow und Investitionen, wodurch
+  // FCF-Marge (F5) und Bewertung (F7) ohne Zahlen dastanden. Ursache war die
+  // aeltere quoteSummary-Schnittstelle. Diese beiden Proben zeigen schwarz auf
+  // weiss, WELCHE der beiden Quellen liefert - ohne sie bliebe nur Raten.
+  {
+    key: "yahoo-fundamentals-timeseries",
+    label: "Yahoo Fundamentaldaten NEU (fundamentals-timeseries, AAPL) – liefert es den operativen Cashflow?",
+    url: timeseriesUrl("query1", "AAPL", Date.now(), 6),
+    headers: { "Accept": "application/json", "User-Agent": UA },
+    expect: (body) => {
+      let json;
+      try { json = JSON.parse(body); } catch (_) { return "Antwort ist kein JSON"; }
+      const rows = parseTimeseries(json);
+      if (!rows.length) return "keine Jahreszeilen erkannt - Antwortform hat sich geaendert?";
+      const mitCf = rows.filter((r) => r.operatingCashflow != null).length;
+      const mitFcf = rows.filter((r) => r.freeCashflowReported != null).length;
+      if (!mitCf && !mitFcf) return `${rows.length} Jahre erkannt, aber KEIN operativer Cashflow und kein freier Cashflow dabei`;
+      return null;
+    },
+  },
+  {
+    key: "yahoo-fundamentals-quotesummary",
+    label: "Yahoo Fundamentaldaten ALT (quoteSummary, AAPL) – Vergleichsprobe, Leerlauf hier ist der bekannte Befund",
+    url: "https://query1.finance.yahoo.com/v10/finance/quoteSummary/AAPL?modules=cashflowStatementHistory",
+    headers: { "Accept": "application/json", "User-Agent": UA },
+  },
   {
     key: "gdelt",
     label: "GDELT (Weltlage, Nachrichtenvolumen – Hauptpfad mit 7-Tage-Fenster)",
