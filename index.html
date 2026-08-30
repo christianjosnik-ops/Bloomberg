@@ -382,6 +382,13 @@ const {
   CHART_RANGES, getChart, getQuoteLite, getDetail, askGroq,
 } = MarketData;
 
+// Ab wie vielen eingetippten Zeichen Vorschlaege erscheinen. Bewusst EINE
+// Konstante: die Schwelle wird an zwei Stellen gebraucht (im Sucheffekt und
+// beim Einblenden der Liste). Standen dort zwei Zahlen, fuehrte jede Aenderung
+// an nur einer Stelle zu einem Suchfeld, das entweder rechnet ohne anzuzeigen
+// oder eine leere Liste einblendet.
+const SUGGEST_MIN = 3;
+
 /* ================= LocalStorage persistence (standalone file, no window.storage) ================= */
 const LS = {
   get(k) { try { const v = localStorage.getItem("term_" + k); return v == null ? null : JSON.parse(v); } catch { return null; } },
@@ -1570,13 +1577,33 @@ function App() {
   useEffect(() => {
     const q = cmd.trim();
     setSuggestDone(false);
-    if (q.length < 2) { setSuggestions([]); return; }
+    if (q.length < SUGGEST_MIN) { setSuggestions([]); return; }
     suggestSeq.current += 1; const mySeq = suggestSeq.current;
     const t = setTimeout(async () => {
       const ql = q.toLowerCase();
       const local = [...EU_PRESETS, ...ASIA_PRESETS]
         .filter((p) => p.label.toLowerCase().includes(ql) || p.s.toLowerCase().includes(ql))
         .map((p) => ({ symbol: p.y, name: p.label, exchange: "" }));
+
+      // Die lokalen Treffer SOFORT zeigen, ohne auf Yahoo zu warten.
+      //
+      // Vorher stand hier erst `await searchSymbol(q)` und danach ein einziges
+      // setSuggestions - die bereits fertige lokale Liste wurde also bis zum
+      // Ende des Netzaufrufs zurueckgehalten. Der darf laut Suchbudget bis zu
+      // 5 Sekunden dauern (und tut das, wenn Yahoo klemmt). Ergebnis: Man tippt
+      // drei Buchstaben und sieht sekundenlang nichts, obwohl der passende
+      // Vorschlag lokal schon dastand.
+      //
+      // suggestDone bleibt hier absichtlich false: Es wird noch gesucht, und
+      // "Keine Treffer" darf erst stehen, wenn auch das Netz geantwortet hat.
+      //
+      // BEDINGUNGSLOS setzen, auch wenn `local` leer ist. Mit einem
+      // `if (local.length)` blieben die Treffer der VORIGEN Eingabe stehen,
+      // solange die neue Netzsuche lief - man tippt "xyzq" und liest noch
+      // sekundenlang "Rheinmetall". Eine leere Liste plus "sucht…" ist die
+      // ehrliche Anzeige: zu DIESER Eingabe ist lokal nichts bekannt.
+      setSuggestions(local);
+
       const net = await searchSymbol(q);
       if (mySeq !== suggestSeq.current) return; // veraltete Antwort - neuere Eingabe existiert bereits
       const merged = [...local, ...net.filter((h) => !local.find((l) => l.symbol === h.symbol))].slice(0, 8);
@@ -1870,8 +1897,9 @@ function App() {
             <input className="field field--cmd" value={cmd} onChange={(e) => setCmd(e.target.value)} onKeyDown={(e) => e.key === "Enter" && goCmd()} onBlur={() => setTimeout(() => setSuggestions([]), 150)} placeholder="TICKER + GO, oder AAPL RATIO / AAPL COMPS MSFT" />
             <span className="caret" style={{ color: C.orange }}>▊</span>
           </div>
-          {cmd.trim().length >= 2 && (suggestions.length > 0 || suggestDone) && (
+          {cmd.trim().length >= SUGGEST_MIN && (
             <div className="suggest">
+              {suggestions.length === 0 && !suggestDone && <div className="muted" style={{ padding: "9px 10px" }}>sucht…</div>}
               {suggestions.length === 0 && suggestDone && <div className="muted" style={{ padding: "9px 10px" }}>Keine Treffer für "{cmd.trim()}".</div>}
               {suggestions.map((s, i) => (
                 <div key={s.symbol + i} onMouseDown={() => selectSuggestion(s)} className="suggest__row">

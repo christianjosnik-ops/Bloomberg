@@ -157,3 +157,15 @@ werden in `quote.js` je Balken uebernommen (`o`/`h`/`l` neben `p`/`v`).
 - Einzelne Balken ohne Open/Hoch/Tief (Yahoo-Luecken an Feiertagen) entfallen
   als Kerze, bleiben aber als Linienpunkt erhalten - sie erfinden kein
   Hoch/Tief und heben auch das Gruppen-Hoch nicht an.
+
+## Suchvorschlaege
+
+Vorschlaege erscheinen ab **drei** eingetippten Zeichen (`SUGGEST_MIN` in
+`index.html` - eine Konstante fuer beide Stellen, die die Schwelle brauchen).
+
+Die Liste kommt zweistufig: Treffer aus den lokalen Presets stehen sofort da,
+die Yahoo-Suche wird nachtraeglich dazugemischt. Das ist wichtig, weil die
+Netzsuche im schlechten Fall bis zum Suchbudget von 5 Sekunden braucht -
+solange darf ein bereits bekannter Vorschlag nicht zurueckgehalten werden.
+Waehrend das Netz noch antwortet, steht "sucht…"; "Keine Treffer" erscheint
+erst, wenn auch die Netzsuche durch ist.
