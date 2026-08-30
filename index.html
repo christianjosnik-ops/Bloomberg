@@ -362,6 +362,7 @@ body{font-variant-numeric:tabular-nums;}
 <script src="assets/js/theme.js"></script>
 <script src="assets/js/indicators.js"></script>
 <script src="assets/js/market-data.js"></script>
+<script src="assets/js/mc.js"></script>
 
 <!-- App-Quelltext (wird unten kontrolliert kompiliert) -->
 <script type="text/plain" id="app-src">
@@ -372,7 +373,7 @@ const { useState, useMemo, useRef, useEffect } = React;
 // aus den CSS-Klassen (--mono bzw. .field). C bleibt noetig, weil die SVG-Charts
 // Farben als Attributwerte brauchen, wo CSS-Variablen nicht greifen.
 const { C, CUR, fmtCap, fmtVol, fmtMoney, fmtRatio, pctColor, ago, METRIC_META, RATIO_SUPPRESS_FOR_FINANCIALS, GEO_LEVEL_META, geoLevelMeta } = Theme;
-const { sma, rsi } = Indicators;
+const { sma, rsi, aggregateOHLC, groupSizeFor } = Indicators;
 const {
   EU_PRESETS, ASIA_PRESETS, MACRO_PRESETS, US_MACRO_PRESETS, EURO_MACRO_PRESETS, INDEX_PRESETS, US_UNIVERSE, US_NAME, SECTORS,
   FH, TD, YF, FRED_FN,
@@ -453,6 +454,52 @@ function SvgChart({ series, up, overlays, height }) {
         o.vals.forEach((v, i) => { if (v == null) { if (cur.length > 1) segs.push(cur); cur = []; return; } cur.push([xAt(i), yAt(v)]); });
         if (cur.length > 1) segs.push(cur);
         return segs.map((seg, si) => <path key={oi + "-" + si} d={seg.map((p, i) => (i === 0 ? `M${p[0]},${p[1]}` : `L${p[0]},${p[1]}`)).join(" ")} fill="none" stroke={o.color} strokeWidth="1.2" opacity="0.9" />);
+      })}
+    </svg>
+  );
+}
+// Kerzenchart. Zeichnet bewusst NUR mit <rect>, keine <line>: das SVG laeuft
+// wie alle anderen hier mit preserveAspectRatio="none" (es wird also horizontal
+// gestreckt). Eine Strichstaerke wuerde dabei mitverzerrt, eine Rechteckbreite
+// nicht - Dochte und Koerper bleiben so in jeder Fensterbreite sauber.
+//
+// Balken ohne o/h/l (Yahoo-Luecken) werden uebersprungen statt als Kerze mit
+// Nullwerten gezeichnet. Die Skala kommt trotzdem aus ALLEN Balken, damit das
+// Bild nicht springt, wenn zwischen Linie und Kerzen umgeschaltet wird.
+function CandleChart({ series, height }) {
+  if (!series || series.length < 3) return null;
+  const w = 600, h = 200, pad = 8;
+  const px = height || 210;
+
+  const hochs = series.map((d) => (d.h != null ? d.h : d.p));
+  const tiefs = series.map((d) => (d.l != null ? d.l : d.p));
+  const min = Math.min.apply(null, tiefs), max = Math.max.apply(null, hochs);
+  const range = max - min || 1;
+  const yAt = (v) => h - pad - ((v - min) / range) * (h - pad * 2);
+
+  const slot = (w - pad * 2) / series.length;
+  // Mindestens ein halber Nutzer-Pixel Koerperbreite, sonst verschwindet die
+  // Kerze bei vielen Balken ganz. Der Docht ist ein Drittel davon.
+  const bodyW = Math.max(slot * 0.7, 0.6);
+  const wickW = Math.max(bodyW / 3, 0.3);
+
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", height: px, display: "block" }} preserveAspectRatio="none">
+      {series.map((d, i) => {
+        if (d.o == null || d.h == null || d.l == null) return null;
+        const x = pad + i * slot + slot / 2;
+        const steigt = d.p >= d.o;
+        const col = steigt ? C.green : C.red;
+        const yO = yAt(d.o), yC = yAt(d.p);
+        const top = Math.min(yO, yC);
+        // Doji (Open == Close): ohne Mindesthoehe waere der Koerper unsichtbar.
+        const bodyH = Math.max(Math.abs(yC - yO), 0.8);
+        return (
+          <g key={i}>
+            <rect x={x - wickW / 2} y={yAt(d.h)} width={wickW} height={Math.max(yAt(d.l) - yAt(d.h), 0.5)} fill={col} opacity="0.85" />
+            <rect x={x - bodyW / 2} y={top} width={bodyW} height={bodyH} fill={col} />
+          </g>
+        );
       })}
     </svg>
   );
@@ -987,6 +1034,339 @@ function GeoWorldMap({ geo, geoSel, setGeoSel }) {
   );
 }
 
+/* ================= MONTE-CARLO-FENSTER =================
+ *
+ * Eigenes Fenster (Overlay ueber der App), in dem die Simulation LIVE ablaeuft:
+ * jeder Durchlauf erscheint als einzelner Punkt.
+ *
+ * WARUM CANVAS UND NICHT SVG: Bei mehreren tausend Durchlaeufen waere ein
+ * DOM-Knoten je Punkt zu teuer - React muesste bei jedem Bild eine wachsende
+ * Elementliste abgleichen, und genau das ruckelt auf dem Handy. Auf Canvas wird
+ * jeder Punkt EINMAL gezeichnet und nie wieder angefasst; die Zeichenlast ist
+ * damit unabhaengig davon, wie viele Punkte schon dastehen.
+ *
+ * WARUM EIN OVERLAY UND KEIN ECHTES BROWSERFENSTER: window.open() wird von
+ * Pop-up-Blockern regelmaessig verworfen (auf Mobilgeraeten fast immer), und
+ * ein zweites Fenster braeuchte React, Babel und das CSS ein zweites Mal. Das
+ * Overlay verhaelt sich wie ein Fenster (Titelzeile, Schliessen, Esc), geht
+ * aber ueberall.
+ */
+// Eingabefelder der Annahmen. BEWUSST AUSSERHALB von MonteCarloWindow:
+// Waeren sie im Rumpf der Komponente definiert, entstuende bei jedem Rendern
+// ein NEUER Komponententyp. React kann den dann nicht wiedererkennen, haengt
+// das <input> aus und neu ein - und der Fokus geht bei jedem Tastendruck
+// verloren. Eine mehrstellige Zahl liesse sich gar nicht eintippen.
+function MCFeld({ ann, setAnn, gruppe, schluessel, disabled }) {
+  return (
+    <input className="field" type="number" step="0.5" disabled={disabled}
+      value={ann && ann[gruppe] ? +(ann[gruppe][schluessel] * 100).toFixed(2) : ""}
+      onChange={(e) => {
+        const v = parseFloat(e.target.value);
+        if (isNaN(v)) return;
+        setAnn((a) => Object.assign({}, a, { [gruppe]: Object.assign({}, a[gruppe], { [schluessel]: v / 100 }) }));
+      }}
+      style={{ width: 62, padding: "2px 4px" }} />
+  );
+}
+function MCAnnahmeZeile({ label, gruppe, hinweis, ann, setAnn, disabled }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5, flexWrap: "wrap" }}>
+      <span className="stat__k" style={{ width: 120, flexShrink: 0 }}>{label}</span>
+      <MCFeld ann={ann} setAnn={setAnn} gruppe={gruppe} schluessel="min" disabled={disabled} /><span className="muted">–</span>
+      <MCFeld ann={ann} setAnn={setAnn} gruppe={gruppe} schluessel="mode" disabled={disabled} /><span className="muted">–</span>
+      <MCFeld ann={ann} setAnn={setAnn} gruppe={gruppe} schluessel="max" disabled={disabled} />
+      <span className="muted" style={{ fontSize: "var(--fs-2xs)" }}>%{hinweis ? " · " + hinweis : ""}</span>
+    </div>
+  );
+}
+
+function MonteCarloWindow({ d, onClose }) {
+  const canvasRef = useRef(null);
+  const laufRef = useRef(null);   // Zustand des laufenden Simulationslaufs
+  const rafRef = useRef(0);
+
+  const [laeuft, setLaeuft] = useState(false);
+  const [fortschritt, setFortschritt] = useState({ done: 0, skipped: 0 });
+  const [ergebnis, setErgebnis] = useState(null);
+  const [achse, setAchse] = useState(null);
+  const [seed, setSeed] = useState(12345);
+
+  const GESAMT = 4000;
+  const PILOT = 400;    // Vorlauf, nur um die Skala festzulegen (siehe unten)
+  const PRO_BILD = 60;
+
+  // ---- Ausgangsgroessen aus den echten Zahlen des Wertes -------------------
+  // Bewusst defensiv ueber window.*: faellt eine der Logikdateien aus, zeigt
+  // das Fenster einen Hinweis statt die ganze App mitzureissen.
+  const basis = useMemo(() => {
+    const MCmod = window.MC;
+    if (!MCmod || !window.Ratios) return { fehler: "Rechenmodul nicht geladen (mc.js/ratios.js)." };
+    const rows = (d && d.fundamentals) || [];
+    if (rows.length < 1) return { fehler: "Für diesen Wert liegen keine Bilanzdaten vor — ohne Cashflow lässt sich nichts bewerten." };
+    const p = MCmod.suggestParams(rows);
+    if (!p) return { fehler: "Die Bilanzdaten enthalten keinen operativen Cashflow / keine Investitionen — dafür ist ein DCF das falsche Werkzeug." };
+    if (p.fcf0 <= 0) return { fehler: "Der freie Cashflow ist negativ. Eine Firma, die Geld verbrennt, lässt sich so nicht bewerten — das ist kein Anzeigefehler." };
+    const r = window.Ratios.computeRatios(rows[0], rows[1] || null);
+    // mktcap kommt in MILLIARDEN, die Bilanzzeilen in ganzen Einheiten.
+    const marketCap = (d.mktcap != null) ? d.mktcap * 1e9 : null;
+    return { p: p, netDebt: (r && r.netDebt != null) ? r.netDebt : 0, marketCap: marketCap };
+  }, [d]);
+
+  const [ann, setAnn] = useState(null);
+  useEffect(() => { if (basis && basis.p) setAnn(basis.p); }, [basis]);
+
+  // Esc schliesst das Fenster - wie ein echtes Fenster.
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Laufenden Lauf abbrechen, wenn das Fenster verschwindet - sonst zeichnet
+  // die Schleife auf ein Canvas, das es nicht mehr gibt.
+  useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
+
+  function canvasSetup() {
+    const cv = canvasRef.current;
+    if (!cv) return null;
+    const dpr = window.devicePixelRatio || 1;
+    const br = cv.getBoundingClientRect();
+    cv.width = Math.max(1, Math.round(br.width * dpr));
+    cv.height = Math.max(1, Math.round(br.height * dpr));
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, br.width, br.height);
+    return { ctx: ctx, w: br.width, h: br.height };
+  }
+
+  function zeichneRahmen(g, lo, hi, marketCap) {
+    const { ctx, w, h } = g;
+    ctx.clearRect(0, 0, w, h);
+    if (marketCap == null || !(hi > lo)) return;
+    // Linie des heutigen Boersenwerts: DIE Bezugsgroesse. Punkte darueber =
+    // Durchlaeufe, in denen die Firma mehr wert waere als sie kostet.
+    const y = h - ((marketCap - lo) / (hi - lo)) * h;
+    ctx.strokeStyle = C.amber;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Zeichnet die neuen Werte eines Stapels.
+  //
+  // Die X-Achse ist der VERSUCHSZAEHLER, nicht der Index in der Werteliste.
+  // Sonst endete die Punktwolke bei verworfenen Durchlaeufen vor dem rechten
+  // Rand (bei 50% Verwuerfen mittendrin) - es saehe aus, als waere der Lauf
+  // haengengeblieben. Die gueltigen Werte eines Stapels werden deshalb ueber
+  // die Versuchsspanne verteilt, aus der sie stammen.
+  //
+  // Werte AUSSERHALB der Skala werden weggelassen, nicht an den Rand geklemmt:
+  // Klemmen erzeugt eine dichte Linie am oberen/unteren Rand, die wie eine
+  // echte Haeufung aussieht, in Wahrheit aber nur "alles was drueber liegt"
+  // bedeutet. Genau diese Art stiller Falschaussage soll die Anzeige nicht
+  // machen. Die Kennzahlen unter dem Bild rechnen ohnehin mit ALLEN Werten.
+  function zeichnePunkte(g, werte, vonIndex, versuchVon, versuchBis, lo, hi, marketCap) {
+    const { ctx, w, h } = g;
+    if (!(hi > lo)) return;
+    const neu = werte.length - vonIndex;
+    if (neu <= 0) return;
+    const spanne = Math.max(versuchBis - versuchVon, 1);
+    ctx.globalAlpha = 0.55;
+    for (let k = 0; k < neu; k++) {
+      const v = werte[vonIndex + k];
+      if (v < lo || v > hi) continue;
+      const versuch = versuchVon + ((k + 0.5) / neu) * spanne;
+      const x = (versuch / GESAMT) * w;
+      const y = h - ((v - lo) / (hi - lo)) * h;
+      ctx.fillStyle = (marketCap != null && v > marketCap) ? C.green : C.red;
+      ctx.fillRect(x, y, 1.6, 1.6);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function start() {
+    const MCmod = window.MC;
+    if (!MCmod || !ann || !basis || basis.fehler) return;
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+
+    const g = canvasSetup();
+    if (!g) return;
+
+    const params = {
+      fcf0: basis.p.fcf0, netDebt: basis.netDebt, years: ann.years || 10,
+      growth: ann.growth, discountRate: ann.discountRate, terminalGrowth: ann.terminalGrowth,
+    };
+    laufRef.current = {
+      rng: MCmod.mulberry32(seed), params: params, g: g,
+      werte: [], skipped: 0, gezeichnet: 0, versuche: 0, lo: null, hi: null, phase: "pilot",
+    };
+    setErgebnis(null); setAchse(null);
+    setFortschritt({ done: 0, skipped: 0 });
+    setLaeuft(true);
+    rafRef.current = requestAnimationFrame(schritt);
+  }
+
+  function stop() {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = 0;
+    setLaeuft(false);
+    const L = laufRef.current;
+    if (L && L.werte.length) setErgebnis(window.MC.summarize(L.werte, basis.marketCap));
+  }
+
+  function schritt() {
+    const L = laufRef.current;
+    const MCmod = window.MC;
+    if (!L || !MCmod) return;
+
+    // PHASE 1 (Pilot): Erst rechnen, dann Skala festlegen, DANN zeichnen.
+    // Ohne diesen Vorlauf muesste die Achse mitwachsen und alle bereits
+    // gezeichneten Punkte staenden an der falschen Stelle - man muesste bei
+    // jedem Bild alles neu zeichnen, und die Anzeige wuerde springen.
+    if (L.phase === "pilot") {
+      const r = MCmod.runBatch(PILOT, L.params, L.rng);
+      L.werte = r.values; L.skipped = r.skipped;
+      if (!L.werte.length) { stop(); return; }
+      const sortiert = L.werte.slice().sort((a, b) => a - b);
+      // Robuste Grenzen: einzelne Extremwerte (sehr niedrige Abzinsung) wuerden
+      // die Achse sonst so weit aufziehen, dass die Punktwolke zu einem Strich
+      // zusammenfaellt. 2%/98% statt min/max.
+      let lo = MCmod.percentile(sortiert, 0.02);
+      let hi = MCmod.percentile(sortiert, 0.98);
+      if (basis.marketCap != null) { lo = Math.min(lo, basis.marketCap); hi = Math.max(hi, basis.marketCap); }
+      const luft = (hi - lo) * 0.08 || Math.abs(hi) * 0.1 || 1;
+      L.lo = lo - luft; L.hi = hi + luft;
+      setAchse({ lo: L.lo, hi: L.hi });
+      zeichneRahmen(L.g, L.lo, L.hi, basis.marketCap);
+      zeichnePunkte(L.g, L.werte, 0, 0, PILOT, L.lo, L.hi, basis.marketCap);
+      L.gezeichnet = L.werte.length;
+      L.versuche = PILOT;
+      L.phase = "lauf";
+      setFortschritt({ done: L.werte.length + L.skipped, skipped: L.skipped });
+      rafRef.current = requestAnimationFrame(schritt);
+      return;
+    }
+
+    // PHASE 2: stapelweise weiterrechnen und nur die NEUEN Punkte zeichnen.
+    const offen = GESAMT - L.versuche;
+    const n = Math.min(PRO_BILD, offen);
+    if (n > 0) {
+      const r = MCmod.runBatch(n, L.params, L.rng);
+      for (let i = 0; i < r.values.length; i++) L.werte.push(r.values[i]);
+      L.skipped += r.skipped;
+      zeichnePunkte(L.g, L.werte, L.gezeichnet, L.versuche, L.versuche + n, L.lo, L.hi, basis.marketCap);
+      L.gezeichnet = L.werte.length;
+      L.versuche += n;
+      setFortschritt({ done: L.versuche, skipped: L.skipped });
+    }
+    if (L.versuche >= GESAMT) {
+      setErgebnis(MCmod.summarize(L.werte, basis.marketCap));
+      setLaeuft(false);
+      rafRef.current = 0;
+      return;
+    }
+    rafRef.current = requestAnimationFrame(schritt);
+  }
+
+  const cur = d.currency || "";
+  const pct = (x) => (x == null ? "—" : (x >= 0 ? "+" : "") + (x * 100).toFixed(1) + "%");
+  const geld = (x) => (x == null ? "—" : fmtCap(x / 1e9));
+
+  return (
+    <div onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.72)", zIndex: 900, display: "flex", alignItems: "center", justifyContent: "center", padding: 12 }}>
+      <div onClick={(e) => e.stopPropagation()} className="panel"
+        style={{ width: "min(980px, 100%)", maxHeight: "92dvh", overflowY: "auto", padding: 0 }}>
+
+        {/* Titelzeile */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", borderBottom: "1px solid var(--line)", position: "sticky", top: 0, background: C.panel, zIndex: 2 }}>
+          <div style={{ color: C.orange, fontWeight: 700, letterSpacing: 0.5 }}>
+            ◈ MONTE CARLO · {d.s} <span className="muted" style={{ fontWeight: 400 }}>Bewertungs-Bandbreite</span>
+          </div>
+          <button className="btn btn--ghost" onClick={onClose}>✕ ESC</button>
+        </div>
+
+        <div style={{ padding: 12 }}>
+          {basis.fehler ? (
+            <div className="note note--warn">{basis.fehler}</div>
+          ) : (<>
+            <div className="muted" style={{ marginBottom: 10, lineHeight: 1.5 }}>
+              Jeder Punkt ist <b>ein</b> kompletter Durchlauf mit zufällig gezogenen Annahmen.
+              Die gestrichelte Linie ist der heutige Börsenwert: Punkte <span style={{ color: C.green }}>darüber</span> sind
+              Durchläufe, in denen die Firma mehr wert wäre als sie kostet, <span style={{ color: C.red }}>darunter</span> weniger.
+              Keine Prognose und keine Anlageberatung — eine Rechnung über Annahmen, die Sie selbst setzen.
+            </div>
+
+            <div className="grid-pair" style={{ gap: 10, marginBottom: 10 }}>
+              <div>
+                <MCAnnahmeZeile label="WACHSTUM p.a." gruppe="growth" ann={ann} setAnn={setAnn} disabled={laeuft}
+                  hinweis={basis.p.histGrowth != null ? "historisch " + pct(basis.p.histGrowth) : "kein Vorjahr"} />
+                <MCAnnahmeZeile label="KAPITALKOSTEN" gruppe="discountRate" ann={ann} setAnn={setAnn} disabled={laeuft} hinweis="Annahme" />
+                <MCAnnahmeZeile label="EWIGES WACHSTUM" gruppe="terminalGrowth" ann={ann} setAnn={setAnn} disabled={laeuft} hinweis="nach 10 J." />
+              </div>
+              <div>
+                <Stat k="FREIER CASHFLOW" v={geld(basis.p.fcf0) + " " + cur} />
+                <Stat k="NETTOSCHULDEN" v={geld(basis.netDebt) + " " + cur} />
+                <Stat k="BÖRSENWERT HEUTE" v={basis.marketCap != null ? geld(basis.marketCap) + " " + cur : "—"} />
+                <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <button className="btn btn--go" onClick={laeuft ? stop : start}>
+                    {laeuft ? "■ STOPP" : "▶ " + GESAMT.toLocaleString("de-DE") + " DURCHLÄUFE"}
+                  </button>
+                  <span className="stat__k">STARTWERT</span>
+                  <input className="field" type="number" value={seed} disabled={laeuft}
+                    onChange={(e) => setSeed(parseInt(e.target.value, 10) || 0)} style={{ width: 82, padding: "2px 4px" }} />
+                </div>
+              </div>
+            </div>
+
+            {/* Die Punktwolke */}
+            <div style={{ position: "relative", border: "1px solid var(--line)", background: C.bg }}>
+              <canvas ref={canvasRef} style={{ width: "100%", height: 260, display: "block" }} />
+              {achse && (<>
+                <span className="muted" style={{ position: "absolute", top: 3, left: 5, fontSize: "var(--fs-2xs)" }}>{geld(achse.hi)} {cur}</span>
+                <span className="muted" style={{ position: "absolute", bottom: 3, left: 5, fontSize: "var(--fs-2xs)" }}>{geld(achse.lo)} {cur}</span>
+              </>)}
+              {!achse && !laeuft && (
+                <div className="muted" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  Auf ▶ drücken — die Punkte erscheinen einzeln, während gerechnet wird.
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", gap: 14, marginTop: 6, flexWrap: "wrap" }} className="muted">
+              <span>{fortschritt.done.toLocaleString("de-DE")} / {GESAMT.toLocaleString("de-DE")} Durchläufe</span>
+              {fortschritt.skipped > 0 && (
+                <span style={{ color: C.amber }}>
+                  {fortschritt.skipped.toLocaleString("de-DE")} verworfen (Kapitalkosten unter dem ewigen Wachstum — dort ist die Formel nicht definiert)
+                </span>
+              )}
+            </div>
+
+            {ergebnis && (
+              <div style={{ marginTop: 10, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+                <div style={{ color: C.orange, fontSize: "var(--fs-2xs)", letterSpacing: 1.2, fontWeight: 700, marginBottom: 6 }}>ERGEBNIS ({ergebnis.n.toLocaleString("de-DE")} gültige Durchläufe)</div>
+                <Stat k="UNTERE GRENZE (10%)" v={geld(ergebnis.p10) + " " + cur + "  ·  " + pct(ergebnis.upsideP10)} />
+                <Stat k="MITTE (50%)" v={geld(ergebnis.p50) + " " + cur + "  ·  " + pct(ergebnis.upsideP50)} />
+                <Stat k="OBERE GRENZE (90%)" v={geld(ergebnis.p90) + " " + cur + "  ·  " + pct(ergebnis.upsideP90)} />
+                {ergebnis.shareAboveMarket != null && (
+                  <div className="note" style={{ marginTop: 8, borderColor: ergebnis.shareAboveMarket > 0.8 ? C.green : (ergebnis.shareAboveMarket < 0.2 ? C.red : C.amber) }}>
+                    <b>In {(ergebnis.shareAboveMarket * 100).toFixed(0)}% der Durchläufe</b> lag der errechnete Wert über dem Börsenwert.
+                    {ergebnis.shareAboveMarket > 0.8 && " Sieht bei fast jeder Annahme günstig aus."}
+                    {ergebnis.shareAboveMarket < 0.2 && " Sieht bei fast jeder Annahme teuer aus."}
+                    {ergebnis.shareAboveMarket >= 0.2 && ergebnis.shareAboveMarket <= 0.8 && " Hängt stark davon ab, welche Annahme man trifft — das Ergebnis trägt keine klare Aussage."}
+                  </div>
+                )}
+                {basis.marketCap == null && <div className="muted" style={{ marginTop: 6 }}>Kein Börsenwert verfügbar — deshalb nur die Wertverteilung, keine Über-/Unterbewertung.</div>}
+              </div>
+            )}
+          </>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diagBusy, diagErr, runDiag }) {
   const countries = geo ? Object.values(geo.countries) : [];
   const sorted = countries.slice().sort((a, b) => {
@@ -1104,6 +1484,8 @@ function App() {
   const [chart, setChart] = useState({ ok: false, series: [] });
   const [chartRange, setChartRange] = useState("6mo");
   const [showSMA, setShowSMA] = useState(true); const [showVol, setShowVol] = useState(true); const [showRSI, setShowRSI] = useState(true);
+  const [chartMode, setChartMode] = useState("line"); // "line" | "candle"
+  const [mcOffen, setMcOffen] = useState(false);
   const [cmd, setCmd] = useState("");
   const [suggestions, setSuggestions] = useState([]);
   const [suggestDone, setSuggestDone] = useState(false);
@@ -1405,6 +1787,26 @@ function App() {
     showRSI && chartVals.length > 3 ? rsi(chartVals, 14) : null
   ), [showRSI, chartVals]);
 
+  // Kerzen brauchen Open/Hoch/Tief je Balken. Nicht jede Quelle liefert die:
+  // Stooq schon, Finnhub-only-Werte nicht. Statt einer leeren Flaeche wird
+  // deshalb geprueft, ob ueberhaupt genug vollstaendige Balken da sind - sonst
+  // bleibt die Linie stehen und sagt warum.
+  const hasOHLC = useMemo(() => {
+    const s = chart.series || [];
+    if (s.length < 3) return false;
+    let voll = 0;
+    for (let i = 0; i < s.length; i++) { if (s[i].o != null && s[i].h != null && s[i].l != null) voll++; }
+    return voll >= Math.max(3, s.length * 0.5);
+  }, [chart.series]);
+  // Zusammenfassen erst ab zu vielen Balken - die Regel steckt in
+  // indicators.js (groupSizeFor), damit sie testbar ist.
+  const candleGroup = useMemo(
+    () => groupSizeFor((chart.series || []).length, 160),
+    [chart.series]);
+  const candleSeries = useMemo(
+    () => aggregateOHLC(chart.series || [], candleGroup),
+    [chart.series, candleGroup]);
+
   if (!booted) return <div style={{ minHeight: "100dvh", color: C.amber, display: "flex", alignItems: "center", justifyContent: "center" }}>lädt…</div>;
 
   if (!connected) return (
@@ -1539,19 +1941,38 @@ function App() {
               style={{ marginBottom: 8 }}>
               {chart.ok && chart.series.length > 3 ? (<>
                 <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap" }}>
+                  <button onClick={() => setChartMode((v) => (v === "line" ? "candle" : "line"))} className={"btn btn--tog" + (chartMode === "candle" ? " btn--on" : "")}>
+                    {chartMode === "candle" ? "KERZEN" : "LINIE"}
+                  </button>
                   <button onClick={() => setShowSMA((v) => !v)} className={"btn btn--tog" + (showSMA ? " btn--on" : "")}>SMA 20/50</button>
                   <button onClick={() => setShowVol((v) => !v)} className={"btn btn--tog" + (showVol ? " btn--on" : "")}>VOL</button>
                   <button onClick={() => setShowRSI((v) => !v)} className={"btn btn--tog" + (showRSI ? " btn--on" : "")}>RSI(14)</button>
                 </div>
-                <SvgChart series={chart.series} up={up} overlays={smaOverlays} />
-                {showVol && <VolumeChart series={chart.series} />}
+                {chartMode === "candle" && !hasOHLC && (
+                  <div className="note note--warn" style={{ marginBottom: 8 }}>
+                    Für diesen Ticker liefert die Quelle keine Open/Hoch/Tief-Werte — Kerzen sind hier nicht möglich, deshalb weiter als Linie.
+                  </div>
+                )}
+                {chartMode === "candle" && hasOHLC
+                  ? <CandleChart series={candleSeries} />
+                  : <SvgChart series={chart.series} up={up} overlays={smaOverlays} />}
+                {chartMode === "candle" && hasOHLC && candleGroup > 1 && (
+                  <div className="muted" style={{ marginTop: 4 }}>
+                    Je {candleGroup} Handelstage zu einer Kerze zusammengefasst ({candleSeries.length} von {chart.series.length} Balken) — sonst wäre jede Kerze unter einem Pixel breit.
+                  </div>
+                )}
+                {showVol && <VolumeChart series={chartMode === "candle" && hasOHLC ? candleSeries : chart.series} />}
                 {showRSI && rsiVals && <RSIChart vals={rsiVals} />}
               </>) : <div className="muted" style={{ padding: "8px 0" }}>Chart lädt / für diesen Ticker nicht verfügbar.</div>}
               <DayRange d={d} />
             </Panel>
 
             <div className="grid-pair" style={{ marginBottom: 8 }}>
-              <Panel title="KENNZAHLEN">
+              <Panel title="KENNZAHLEN" right={
+                <button className="btn btn--ghost" onClick={() => setMcOffen(true)} disabled={!d.fundamentals || !d.fundamentals.length}
+                  title={d.fundamentals && d.fundamentals.length ? "Bewertungs-Bandbreite simulieren" : "Keine Bilanzdaten für diesen Wert"}>
+                  ◈ MONTE CARLO
+                </button>}>
                 <Stat k="OPEN" v={d.open ?? "—"} /><Stat k="HOCH" v={d.high ?? "—"} color={C.green} /><Stat k="TIEF" v={d.low ?? "—"} color={C.red} /><Stat k="VORTAG" v={d.prevClose ?? "—"} /><Stat k="WÄHRUNG" v={d.currency || "—"} /><Stat k="MKT CAP" v={fmtCap(d.mktcap)} />
                 <Stat k="52W HOCH" v={d.week52High ?? "—"} color={C.green} /><Stat k="52W TIEF" v={d.week52Low ?? "—"} color={C.red} />
                 <Stat k="VOLUMEN" v={fmtVol(d.volume)} /><Stat k="Ø VOLUMEN" v={fmtVol(d.avgVolume)} /><Stat k="BETA" v={d.beta ?? "—"} />
@@ -1587,6 +2008,7 @@ function App() {
               </div>
             </div>
           </Panel>
+          {mcOffen && <MonteCarloWindow d={d} onClose={() => setMcOffen(false)} />}
         </div>
       )}
 

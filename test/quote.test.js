@@ -40,28 +40,74 @@ function yahooChart({ previousClose, chartPreviousClose, regularMarketPrice }) {
     assert.strictEqual(out.prevClose, 109, "prevClose MUSS der Vortagesschluss sein, nicht der Kurs vor dem Chart-Zeitraum");
     assert.strictEqual(out.chg, 1, "Tagesveraenderung 110-109 = 1");
     assert.strictEqual(out.chgPct, 0.92, "Tagesveraenderung in Prozent, nicht die 37.5% des Halbjahres");
-    console.log("Block 1/6 (previousClose hat Vorrang vor chartPreviousClose): OK");
+    console.log("Block 1/8 (previousClose hat Vorrang vor chartPreviousClose): OK");
   }
 
   // --- Rueckfallebene: fehlt previousClose, darf chartPreviousClose einspringen ---
   {
     const out = shape(yahooChart({ regularMarketPrice: 110, previousClose: null, chartPreviousClose: 80 }), "^GSPC");
     assert.strictEqual(out.prevClose, 80, "ohne previousClose ist chartPreviousClose besser als gar nichts");
-    console.log("Block 2/6 (Rueckfall auf chartPreviousClose wenn noetig): OK");
+    console.log("Block 2/8 (Rueckfall auf chartPreviousClose wenn noetig): OK");
   }
 
   // --- Letzte Rueckfallebene: gar keine Meta-Angabe -> vorletzter Punkt der Reihe ---
   {
     const out = shape(yahooChart({ regularMarketPrice: 110, previousClose: null, chartPreviousClose: null }), "^GSPC");
     assert.strictEqual(out.prevClose, 109, "ohne Meta-Angaben zaehlt der vorletzte Kurs der Zeitreihe");
-    console.log("Block 3/6 (Rueckfall auf die Zeitreihe): OK");
+    console.log("Block 3/8 (Rueckfall auf die Zeitreihe): OK");
   }
 
   // --- Bei range=1d sind beide Werte gleich - das Ergebnis darf sich nicht aendern ---
   {
     const out = shape(yahooChart({ regularMarketPrice: 110, previousClose: 109, chartPreviousClose: 109 }), "^GSPC");
     assert.strictEqual(out.chgPct, 0.92, "bei kurzem Zeitraum sind beide Felder identisch, das Ergebnis bleibt korrekt");
-    console.log("Block 4/6 (kurzer Zeitraum: unveraendert korrekt): OK");
+    console.log("Block 4/8 (kurzer Zeitraum: unveraendert korrekt): OK");
+  }
+
+  // --- Kerzendaten: Open/Hoch/Tief muessen JE BALKEN mitkommen ---
+  //     Vorher enthielt die Zeitreihe nur Schlusskurs und Volumen; die
+  //     Kerzendarstellung braucht o/h/l pro Balken. Yahoo liefert sie im
+  //     selben quote-Objekt - sie wurden bloss nicht ausgelesen.
+  {
+    const roh = yahooChart({ regularMarketPrice: 110, previousClose: 109, chartPreviousClose: 80 });
+    const q = roh.chart.chart.result[0].indicators.quote[0];
+    q.open = [79, 108, 109.5];
+    q.high = [81, 110, 111];
+    q.low = [78.5, 107, 109];
+    const out = shape(roh, "^GSPC");
+
+    assert.strictEqual(out.series.length, 3);
+    assert.deepStrictEqual(
+      out.series.map((b) => [b.o, b.h, b.l, b.p]),
+      [[79, 81, 78.5, 80], [108, 110, 107, 109], [109.5, 111, 109, 110]],
+      "jeder Balken muss Open/Hoch/Tief/Schluss tragen");
+    // Innere Konsistenz: sonst zeichnet die Kerze einen Docht in die falsche Richtung.
+    out.series.forEach((b, i) => {
+      assert.ok(b.h >= Math.max(b.o, b.p) && b.l <= Math.min(b.o, b.p),
+        `Balken ${i}: Hoch/Tief muessen Open und Schluss einschliessen`);
+    });
+    console.log("Block 5/8 (Kerzendaten: Open/Hoch/Tief je Balken): OK");
+  }
+
+  // --- Luecken in den Kerzendaten duerfen die Zeitreihe nicht zerstoeren ---
+  //     Yahoo liefert an Feiertagen/Handelspausen close, aber o/h/l = null.
+  //     Solche Balken muessen als Linienpunkt erhalten bleiben (p gesetzt) und
+  //     duerfen nur als Kerze fehlen - nicht die ganze Reihe abschneiden und
+  //     erst recht keine Kerze aus Nullwerten erzeugen.
+  {
+    const roh = yahooChart({ regularMarketPrice: 110, previousClose: 109, chartPreviousClose: 80 });
+    const q = roh.chart.chart.result[0].indicators.quote[0];
+    q.open = [79, null, 109.5];
+    q.high = [81, null, 111];
+    q.low = [78.5, null, 109];
+    const out = shape(roh, "^GSPC");
+
+    assert.strictEqual(out.series.length, 3, "ein Balken ohne o/h/l darf die Zeitreihe nicht kuerzen");
+    assert.strictEqual(out.series[1].p, 109, "der Schlusskurs des Lueckenbalkens bleibt erhalten");
+    assert.strictEqual(out.series[1].o, null, "fehlendes Open wird null - nie 0, das waere eine erfundene Kerze");
+    assert.strictEqual(out.series[1].h, null);
+    assert.strictEqual(out.series[1].l, null);
+    console.log("Block 6/8 (Luecken in o/h/l: Linie bleibt, Kerze entfaellt, kein Nullwert): OK");
   }
 
   // --- Haengendes Yahoo darf die Function nicht bis zu Netlifys hartem Abbruch
@@ -93,7 +139,7 @@ function yahooChart({ previousClose, chartPreviousClose, regularMarketPrice }) {
     const body = JSON.parse(res.body);
     assert.strictEqual(body.source, "stooq");
     assert.ok(body.partial, "der eingeschraenkte Datenumfang der Ersatzquelle muss benannt sein");
-    console.log("Block 5/6 (haengendes Yahoo: Abbruch im Budget, Stooq springt ein): OK");
+    console.log("Block 7/8 (haengendes Yahoo: Abbruch im Budget, Stooq springt ein): OK");
   }
 
   // --- Auch die Symbolsuche braucht eine Frist: sie laeuft bei jedem
@@ -113,7 +159,7 @@ function yahooChart({ previousClose, chartPreviousClose, regularMarketPrice }) {
     assert.ok(dt < 6000, `die Suche braucht ein eigenes, knappes Budget statt des vollen Funktionsbudgets (gemessen: ${dt}ms)`);
     assert.strictEqual(res.statusCode, 200, "eine ergebnislose Suche ist kein Serverfehler");
     assert.deepStrictEqual(JSON.parse(res.body).quotes, [], "ohne Antwort gibt es eben keine Vorschlaege - aber keinen Haenger");
-    console.log("Block 6/6 (Symbolsuche bricht bei haengendem Yahoo sauber ab): OK");
+    console.log("Block 8/8 (Symbolsuche bricht bei haengendem Yahoo sauber ab): OK");
   }
 
   console.log("\nAlle quote.js-Tests erfolgreich.");
