@@ -275,6 +275,52 @@
     return null;
   }
 
+  // ---- Der freie Cashflow ueber mehrere Jahre ------------------------------
+  //
+  // WOZU: suggestParams nimmt das NEUESTE Jahr als Ausgangswert. Ist genau das
+  // negativ, faellt die Bewertung aus - obwohl das oft nur ein einzelnes Jahr
+  // betrifft: eine grosse Uebernahme, ein Investitionszyklus, ein Rechtsstreit.
+  // Eine Firma, die neun Jahre Geld verdient und im zehnten stark investiert,
+  // ist nicht unbewertbar. Ohne den Blick auf die Reihe sieht man den
+  // Unterschied zwischen "einmaliger Ausreisser" und "verbrennt dauerhaft
+  // Geld" aber gar nicht - und genau der entscheidet, ob ein DCF hier taugt.
+  function freeCashflowSeries(rows) {
+    var out = [];
+    if (!rows || !rows.length) return out;
+    for (var i = 0; i < rows.length; i++) {
+      var f = freeCashflow(rows[i]);
+      if (f) out.push({ year: rows[i].year, wert: f.wert, basis: f.basis, genau: f.genau });
+    }
+    return out;
+  }
+
+  // Fasst die Reihe zu dem zusammen, was fuer die Entscheidung noetig ist.
+  //
+  // `schnitt` ist bewusst der Durchschnitt ueber ALLE vorhandenen Jahre, die
+  // negativen eingeschlossen. Nur die guten Jahre zu mitteln waere Rosinen-
+  // pickerei und wuerde genau die Firmen zu teuer bewerten, bei denen der
+  // Investitionsbedarf wiederkehrt.
+  function freeCashflowLage(rows) {
+    var serie = freeCashflowSeries(rows);
+    if (!serie.length) return null;
+    var summe = 0, positive = 0;
+    for (var i = 0; i < serie.length; i++) {
+      summe += serie[i].wert;
+      if (serie[i].wert > 0) positive++;
+    }
+    return {
+      serie: serie,
+      neuestes: serie[0],
+      jahre: serie.length,
+      positiveJahre: positive,
+      schnitt: summe / serie.length,
+      // Taugt der Durchschnitt als Ersatz-Ausgangswert? Nur wenn er positiv ist
+      // UND die Mehrheit der Jahre positiv war - sonst ist ein einzelnes sehr
+      // gutes Jahr der einzige Grund fuer das positive Mittel.
+      schnittTaugt: (summe / serie.length) > 0 && positive * 2 > serie.length,
+    };
+  }
+
   // ---- Startannahmen aus den echten Zahlen ---------------------------------
   //
   // Leitet Vorschlagswerte aus der Historie ab, damit der Nutzer nicht vor
@@ -322,6 +368,8 @@
   return {
     mulberry32: mulberry32,
     freeCashflow: freeCashflow,
+    freeCashflowSeries: freeCashflowSeries,
+    freeCashflowLage: freeCashflowLage,
     triangular: triangular,
     dcfEquityValue: dcfEquityValue,
     runBatch: runBatch,

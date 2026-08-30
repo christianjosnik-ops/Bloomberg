@@ -47,7 +47,7 @@ function closeTo(actual, expected, eps, msg) {
     fcf0: 100, growth: 0, years: 2, discountRate: 0.10, terminalGrowth: 0, netDebt: -250,
   });
   closeTo(mitCash, v + 250, 1e-6, "ein Nettoguthaben muss den Eigenkapitalwert erhoehen");
-  console.log("Block 1/9 (DCF gegen Handrechnung, Nettoschulden wirken vorzeichenrichtig): OK");
+  console.log("Block 1/10 (DCF gegen Handrechnung, Nettoschulden wirken vorzeichenrichtig): OK");
 }
 
 // ---------------------------------------------------------------------------
@@ -69,7 +69,7 @@ function closeTo(actual, expected, eps, msg) {
     MC.dcfEquityValue({ fcf0: 0, growth: 0.03, years: 10, discountRate: 0.09, terminalGrowth: 0.02, netDebt: 0 }), null,
     "FCF von 0 muss ebenfalls abgelehnt werden");
   assert.strictEqual(MC.dcfEquityValue(null), null, "fehlende Parameter duerfen nicht werfen");
-  console.log("Block 2/9 (unbrauchbare Annahmen liefern null statt einer Scheinzahl): OK");
+  console.log("Block 2/10 (unbrauchbare Annahmen liefern null statt einer Scheinzahl): OK");
 }
 
 // ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ function closeTo(actual, expected, eps, msg) {
   assert.deepStrictEqual(fa, fb, "gleicher Startwert muss exakt dieselbe Folge liefern - sonst sind die Tests wertlos");
   assert.notDeepStrictEqual(fa, fc, "verschiedene Startwerte muessen verschiedene Folgen liefern");
   assert.ok(fa.every((x) => x >= 0 && x < 1), "alle Werte muessen im Intervall [0,1) liegen");
-  console.log("Block 3/9 (Generator ist reproduzierbar und liegt im gueltigen Bereich): OK");
+  console.log("Block 3/10 (Generator ist reproduzierbar und liegt im gueltigen Bereich): OK");
 }
 
 // ---------------------------------------------------------------------------
@@ -111,7 +111,7 @@ function closeTo(actual, expected, eps, msg) {
   // Entarteter Fall: min == max darf nicht NaN erzeugen (Division durch 0).
   assert.strictEqual(MC.triangular(rng, 0.05, 0.05, 0.05), 0.05,
     "eine Spanne der Breite 0 muss den Wert selbst liefern, nicht NaN");
-  console.log("Block 4/9 (Dreiecksverteilung: begrenzt, richtig gewichtet, kein NaN bei Breite 0): OK");
+  console.log("Block 4/10 (Dreiecksverteilung: begrenzt, richtig gewichtet, kein NaN bei Breite 0): OK");
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +143,7 @@ function closeTo(actual, expected, eps, msg) {
   assert.deepStrictEqual(inStapeln, amStueck.values,
     "6x100 muss Wert fuer Wert dasselbe liefern wie 1x600 - sonst haengt das Ergebnis an der Stapelgroesse");
   assert.strictEqual(skipped, amStueck.skipped, "auch die Zahl der verworfenen Durchlaeufe muss uebereinstimmen");
-  console.log("Block 5/9 (stapelweise Ausfuehrung liefert identisches Ergebnis wie ein Lauf am Stueck): OK");
+  console.log("Block 5/10 (stapelweise Ausfuehrung liefert identisches Ergebnis wie ein Lauf am Stueck): OK");
 }
 
 // ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ function closeTo(actual, expected, eps, msg) {
     terminalGrowth: { min: 0.01, mode: 0.02, max: 0.03 },
   }, MC.mulberry32(3));
   assert.strictEqual(sauber.skipped, 0, "bei sauber getrennten Baendern darf nichts verworfen werden");
-  console.log("Block 6/9 (verworfene Durchlaeufe werden gezaehlt statt verschluckt): OK");
+  console.log("Block 6/10 (verworfene Durchlaeufe werden gezaehlt statt verschluckt): OK");
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +201,7 @@ function closeTo(actual, expected, eps, msg) {
   assert.strictEqual(ohne.shareAboveMarket, null, "ohne Boersenwert darf es KEINE Bewertungsaussage geben");
   assert.strictEqual(ohne.upsideP50, null, "fehlender Input -> null, nie ein stillschweigender Ersatzwert");
   assert.strictEqual(MC.summarize([], 50), null, "leere Eingabe -> null");
-  console.log("Block 7/9 (Statistik exakt, fehlender Boersenwert unterdrueckt nur die Bewertungsaussage): OK");
+  console.log("Block 7/10 (Statistik exakt, fehlender Boersenwert unterdrueckt nur die Bewertungsaussage): OK");
 }
 
 // ---------------------------------------------------------------------------
@@ -244,11 +244,83 @@ function closeTo(actual, expected, eps, msg) {
   // Der Vorrang muss stimmen: ist der operative Cashflow da, gewinnt er.
   const beides = MC.freeCashflow({ operatingCashflow: 900, operatingIncome: 800, depreciationAmortization: 300, capex: -200 });
   assert.strictEqual(beides.basis, "ocf", "die genauere Stufe hat Vorrang");
-  console.log("Block 8/9 (freier Cashflow: Rueckfallkette, capex-Vorzeichen, Steuerquote gedeckelt): OK");
+  console.log("Block 8/10 (freier Cashflow: Rueckfallkette, capex-Vorzeichen, Steuerquote gedeckelt): OK");
 }
 
 // ---------------------------------------------------------------------------
-// 9. Startannahmen aus echten Bilanzzeilen
+// 9. Negativer freier Cashflow: einmaliger Ausreisser vs. dauerhaft
+// ---------------------------------------------------------------------------
+{
+  // Der DCF selbst lehnt einen negativen Ausgangswert ab (Block 2). Entscheidend
+  // ist aber die Frage dahinter: Ist EIN Jahr negativ (Uebernahme,
+  // Investitionszyklus) oder verbrennt die Firma dauerhaft Geld? Ohne diese
+  // Unterscheidung wuerde ein einziges schlechtes Jahr eine ansonsten
+  // ertragsstarke Firma unbewertbar machen.
+
+  // --- Fall A: ein Investitionsjahr, sonst gesund ---
+  const ausreisser = [
+    { year: 2025, freeCashflowReported: -5e9 },
+    { year: 2024, freeCashflowReported: 8e9 },
+    { year: 2023, freeCashflowReported: 7e9 },
+    { year: 2022, freeCashflowReported: 6e9 },
+  ];
+  const a = MC.freeCashflowLage(ausreisser);
+  assert.strictEqual(a.jahre, 4);
+  assert.strictEqual(a.positiveJahre, 3);
+  assert.strictEqual(a.neuestes.wert, -5e9, "das neueste Jahr steht vorn");
+  closeTo(a.schnitt, 4e9, 1e-6, "Schnitt = (-5+8+7+6)/4 = 4 - die negativen Jahre zaehlen mit");
+  assert.strictEqual(a.schnittTaugt, true, "Mehrheit positiv und Schnitt positiv -> als Ausgangswert vertretbar");
+
+  // --- Fall B: verbrennt dauerhaft Geld ---
+  const dauerhaft = MC.freeCashflowLage([
+    { year: 2025, freeCashflowReported: -5e9 },
+    { year: 2024, freeCashflowReported: -4e9 },
+    { year: 2023, freeCashflowReported: -6e9 },
+  ]);
+  assert.strictEqual(dauerhaft.positiveJahre, 0);
+  assert.ok(dauerhaft.schnitt < 0);
+  assert.strictEqual(dauerhaft.schnittTaugt, false, "hier ist ein DCF unanwendbar, nicht bloss ungenau");
+
+  // --- Fall C: EIN sehr gutes Jahr zieht den Schnitt hoch ---
+  // Der Schnitt ist positiv, aber nur wegen eines Ausreissers nach oben. Ihn
+  // als Ausgangswert zu nehmen waere Rosinenpickerei - genau das muss die
+  // Mehrheitsbedingung verhindern.
+  const rosinen = MC.freeCashflowLage([
+    { year: 2025, freeCashflowReported: -3e9 },
+    { year: 2024, freeCashflowReported: -2e9 },
+    { year: 2023, freeCashflowReported: 20e9 },
+  ]);
+  assert.ok(rosinen.schnitt > 0, "der Schnitt ist hier positiv …");
+  assert.strictEqual(rosinen.positiveJahre, 1);
+  assert.strictEqual(rosinen.schnittTaugt, false, "… darf aber trotzdem nicht als Ausgangswert taugen");
+
+  // --- Genau die Haelfte positiv reicht nicht ---
+  const haelfte = MC.freeCashflowLage([
+    { year: 2025, freeCashflowReported: -1e9 },
+    { year: 2024, freeCashflowReported: 5e9 },
+  ]);
+  assert.strictEqual(haelfte.positiveJahre, 1);
+  assert.strictEqual(haelfte.schnittTaugt, false, "bei 1 von 2 Jahren ist die Mehrheitsbedingung nicht erfuellt");
+
+  // --- Die Reihe ueberspringt Jahre ohne ableitbaren Cashflow ---
+  const mitLuecke = MC.freeCashflowSeries([
+    { year: 2025, freeCashflowReported: 3e9 },
+    { year: 2024, revenue: 100 },                       // nichts ableitbar
+    { year: 2023, operatingCashflow: 5e9, capex: -1e9 },
+  ]);
+  assert.deepStrictEqual(mitLuecke.map((x) => x.year), [2025, 2023],
+    "Jahre ohne ableitbaren Cashflow duerfen nicht als 0 in den Schnitt eingehen");
+  closeTo(mitLuecke[1].wert, 4e9, 1e-6, "das dritte Jahr wird aus OCF - |capex| abgeleitet");
+
+  assert.strictEqual(MC.freeCashflowLage([]), null, "keine Zeilen -> null");
+  assert.strictEqual(MC.freeCashflowLage(null), null, "fehlende Zeilen duerfen nicht werfen");
+  assert.strictEqual(MC.freeCashflowLage([{ year: 2025, revenue: 1 }]), null,
+    "nur unableitbare Zeilen -> null, keine leere Scheinauswertung");
+  console.log("Block 9/10 (negativer Cashflow: Ausreisser von Dauerzustand getrennt, keine Rosinenpickerei): OK");
+}
+
+// ---------------------------------------------------------------------------
+// 10. Startannahmen aus echten Bilanzzeilen
 // ---------------------------------------------------------------------------
 {
   // capex negativ (Yahoo-Konvention) -> FCF = 500 + (-200) = 300
@@ -295,7 +367,7 @@ function closeTo(actual, expected, eps, msg) {
   const einJahr = MC.suggestParams([{ year: 2025, revenue: 1200, operatingCashflow: 500, capex: -200 }]);
   assert.strictEqual(einJahr.histGrowth, null, "aus einem einzigen Jahr laesst sich kein Wachstum ableiten");
   closeTo(einJahr.growth.mode, 0.03, 1e-9, "dann greift der konservative Standardwert");
-  console.log("Block 9/9 (Startannahmen: gedeckelt, vorzeichenrichtig, kein Erfinden bei Luecken): OK");
+  console.log("Block 10/10 (Startannahmen: gedeckelt, vorzeichenrichtig, kein Erfinden bei Luecken): OK");
 }
 
 console.log("\nAlle mc.js-Tests erfolgreich.");
