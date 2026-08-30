@@ -1328,7 +1328,27 @@ function MonteCarloPanel({ d }) {
 
   const cur = d.currency || "";
   const pct = (x) => (x == null ? "—" : (x >= 0 ? "+" : "") + (x * 100).toFixed(1) + "%");
-  const geld = (x) => (x == null ? "—" : fmtCap(x / 1e9));
+  // EIGENE Geldformatierung statt fmtCap. Grund: fmtCap haengt nur "B" oder "T"
+  // an - zwei Buchstaben, die sich auf einem Bildschirm kaum unterscheiden,
+  // obwohl zwischen ihnen der Faktor 1000 liegt. Bei einer Bewertung ist genau
+  // das der Unterschied zwischen "plausibel" und "voelliger Unsinn", und man
+  // sieht ihn der Zahl nicht an. Ausgeschriebene Einheiten (Mrd./Bio.) sind
+  // unverwechselbar. Zusaetzlich zwei Nachkommastellen: fmtCap rundet in der
+  // Milliarden-Stufe auf eine Stelle, aus 98,98 wird dort "99.0B".
+  const geld = (x) => {
+    if (x == null) return "—";
+    const a = Math.abs(x);
+    const zahl = (v, n) => v.toLocaleString("de-DE", { minimumFractionDigits: n, maximumFractionDigits: n });
+    if (a >= 1e12) return zahl(x / 1e12, 2) + " Bio.";
+    if (a >= 1e9) return zahl(x / 1e9, 2) + " Mrd.";
+    if (a >= 1e6) return zahl(x / 1e6, 2) + " Mio.";
+    return zahl(x, 0);
+  };
+  // Der exakte Betrag, ausgeschrieben. Steht klein unter dem freien Cashflow:
+  // er ist der Ausgangswert der ganzen Rechnung, und wenn dort eine
+  // Groessenordnung danebenliegt, ist jedes Ergebnis wertlos. Ziffern zaehlen
+  // koennen schlaegt jede Abkuerzung.
+  const geldExakt = (x) => (x == null ? "—" : Math.round(x).toLocaleString("de-DE"));
 
   // Handeingabe: steht sowohl als Rueckfallebene bei fehlenden Daten als auch
   // dauerhaft zum Ueberschreiben bereit (eigene Schaetzung statt Bilanzwert).
@@ -1377,6 +1397,7 @@ function MonteCarloPanel({ d }) {
                 <Stat k="FREIER CASHFLOW" v={geld(basis.p.fcf0) + " " + cur} />
                 <div className="muted" style={{ fontSize: "var(--fs-2xs)", marginTop: -2, marginBottom: 4, color: basis.p.fcfGenau ? undefined : C.amber }}>
                   {basis.p.fcfGenau ? "Basis: " : "⚠ "}{basis.p.fcfLabel}
+                  <span style={{ display: "block", color: C.muted }}>= {geldExakt(basis.p.fcf0)} {cur}</span>
                 </div>
                 <Stat k="NETTOSCHULDEN" v={geld(basis.netDebt) + " " + cur} />
                 <Stat k="BÖRSENWERT HEUTE" v={basis.marketCap != null ? geld(basis.marketCap) + " " + cur : "—"} />
