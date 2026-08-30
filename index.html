@@ -1646,6 +1646,26 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
             Zusatzquelle nicht. UCDP verlangt seit Kurzem einen kostenlosen
             Zugangstoken - ohne ihn wird die Quelle absichtlich ausgelassen und
             die Laenderliste kommt vollstaendig aus der kuratierten Liste. */}
+        {(() => {
+          // GDELT-Ausfaelle zusammenfassen. Ein einzelnes fehlgeschlagenes Land
+          // faellt in der Liste nicht auf - faellt GDELT aber FLAECHENDECKEND
+          // aus, sah man bisher nur ueberall "0 Meldungen" und hielt das fuer
+          // ein leeres Ergebnis statt fuer einen Ausfall. Genau diese
+          // Verwechslung war der Anlass.
+          const laender = geo?.countries ? Object.values(geo.countries) : [];
+          const mitFehler = laender.filter((c) => c.error);
+          if (!mitFehler.length) return null;
+          // Haeufigsten Fehlertext nennen - bei einem systematischen Problem ist
+          // er fuer alle Laender derselbe und benennt die Ursache direkt.
+          const zaehler = {};
+          for (const c of mitFehler) zaehler[c.error] = (zaehler[c.error] || 0) + 1;
+          const haeufigster = Object.entries(zaehler).sort((a, b) => b[1] - a[1])[0][0];
+          return (
+            <div style={{ color: C.amber, marginTop: 3 }}>
+              ⚠ GDELT: {mitFehler.length} von {laender.length} Ländern ohne Ergebnis — {haeufigster}
+            </div>
+          );
+        })()}
         {geo?.ucdpError && (/übersprungen/.test(geo.ucdpError)
           ? <div className="muted" style={{ marginTop: 3 }}>UCDP-Konfliktdaten nicht aktiviert ({geo.ucdpError}) — die Länderauswahl kommt aus der kuratierten Liste, GDELT ist unabhängig davon aktiv.</div>
           : <div style={{ color: C.amber, marginTop: 3 }}>⚠ UCDP nicht erreichbar ({geo.ucdpError}) — nur feste Länderliste + GDELT aktiv.</div>
@@ -1660,7 +1680,10 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
           UCDPs Skip-Meldung ("übersprungen: kein Zugangstoken") ist erwartetes
           Verhalten, kein Ausfall - loest das Panel deshalb nicht aus. */}
       {(geoErr
-        || (geo?.ucdpError && !/übersprungen/.test(geo.ucdpError))) && (
+        || (geo?.ucdpError && !/übersprungen/.test(geo.ucdpError))
+        // Faellt GDELT bei der Mehrheit der Laender aus, ist das ein echtes
+        // Problem und keine Nachrichtenlage - dann gehoert die Diagnose sichtbar.
+        || (geo?.countries && Object.values(geo.countries).filter((c) => c.error).length * 2 > Object.keys(geo.countries).length)) && (
         <DiagPanel diag={diag} diagBusy={diagBusy} diagErr={diagErr} runDiag={runDiag} />
       )}
 
@@ -1688,7 +1711,12 @@ function GeoPanel({ geo, geoBusy, geoErr, geoSel, setGeoSel, loadGeo, diag, diag
 
       {selCountry && (
         <Panel title={`${selCountry.flag} ${selCountry.name} · Details`} right={<span onClick={() => setGeoSel(null)} className="muted" style={{ cursor: "pointer" }}>× schließen</span>}>
-          {selCountry.level === "nicht geprüft" && <div className="muted" style={{ marginBottom: 8 }}>Für dieses Land konnte innerhalb des Zeitbudgets keine GDELT-Abfrage abgeschlossen werden — bitte "AKTUALISIEREN" erneut versuchen.</div>}
+          {selCountry.error && (
+            <div className="note note--warn" style={{ marginBottom: 8 }}>
+              GDELT-Abfrage fehlgeschlagen: {selCountry.error}
+            </div>
+          )}
+          {selCountry.level === "nicht geprüft" && !selCountry.error && <div className="muted" style={{ marginBottom: 8 }}>Für dieses Land konnte innerhalb des Zeitbudgets keine GDELT-Abfrage abgeschlossen werden — bitte "AKTUALISIEREN" erneut versuchen.</div>}
           {selCountry.ucdpActive && (
             <div className="note note--warn" style={{ marginBottom: 10 }}>
               <div style={{ fontSize: "var(--fs-2xs)", letterSpacing: 1.2, marginBottom: 4, fontWeight: 700 }}>UCDP · KONFLIKTEREIGNIS ERFASST</div>

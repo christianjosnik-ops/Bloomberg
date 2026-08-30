@@ -262,3 +262,30 @@ Technisches:
 Ob die Quelle live liefert, zeigt die F9-Diagnose: die Probe `usgs-erdbeben`
 prueft **inhaltlich**, ob verwertbare Punkte mit Koordinaten herauskommen - eine
 Antwort mit HTTP 200 und leerer Liste waere sonst faelschlich gruen.
+
+## GDELT: Fehler nennen die Ursache
+
+Im Betrieb stand in der Laenderliste ueberall "0 Meldungen". Das Problem war
+weniger die Zahl als die Ununterscheidbarkeit: ein AUSFALL und ein echtes
+Leerergebnis sahen identisch aus.
+
+Zwei Ursachen dafuer, beide behoben:
+
+1. `geopolitics.js` las die Antwort mit `res.json()`. GDELT meldet Fehler aber
+   im **Klartext** und dabei haeufig mit **HTTP 200** ("Your query was too short
+   or too long", Drosselungsmeldungen). `res.json()` warf dann nur "Unexpected
+   token" - eine Aussage ueber die Antwortform, keine ueber die Ursache. Jetzt
+   wird erst der Text gelesen, dann geparst, und im Fehlerfall steht der Anfang
+   der Antwort im Wortlaut in der Meldung. Dieselbe Lehre, die fuer ReliefWeb
+   schon gezogen war - fuer GDELT war sie nie angewandt worden.
+
+2. Die Function ermittelte den Fehler **je Land** korrekt, das Frontend warf ihn
+   aber weg und zeigte pauschal "Zeitbudget erreicht". Jetzt steht der echte
+   Fehlertext im Detailpanel, und ueber der Karte erscheint eine Sammelmeldung
+   ("GDELT: 18 von 20 Laendern ohne Ergebnis - ..."), sobald ueberhaupt ein Land
+   fehlschlaegt. Faellt die Mehrheit aus, klappt zusaetzlich die Diagnose auf.
+
+Ebenfalls getrennt: eine Antwort **ohne** `articles`-Feld ist ein Fehler
+(Antwortform unerwartet), ein **leeres** `articles`-Feld ist ein gueltiges
+Ergebnis (nichts gefunden). Beides als "0 Meldungen" zu zeigen verwischt genau
+den Unterschied, der bei der Fehlersuche zaehlt.
